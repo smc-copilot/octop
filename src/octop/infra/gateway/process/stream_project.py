@@ -214,6 +214,7 @@ async def _project_chunks(
             tool_state.current_node = node
 
 
+# @lat: [[message-flow#Stream projection]]
 async def project_stream(
     agent_manager: AgentManager,
     agent_id: str,

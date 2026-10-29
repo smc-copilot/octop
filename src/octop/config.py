@@ -121,6 +121,7 @@ class CapabilitiesConfig:
     mobile: MobileCapabilities = field(default_factory=MobileCapabilities)
 
 
+# @lat: [[layers#Config]]
 @dataclass(frozen=True)
 class OctopConfig:
     bind_host: str = "127.0.0.1"

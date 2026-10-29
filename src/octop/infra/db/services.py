@@ -120,6 +120,7 @@ class RepoBundle:
         )
 
 
+# @lat: [[domain#SharedServices]]
 @dataclass(frozen=True)
 class SharedServices:
     paths: PathLayout

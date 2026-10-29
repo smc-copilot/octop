@@ -558,6 +558,7 @@ def _sanitize_bound_mcp_tools(agent: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
+# @lat: [[domain#Agent]]
 class AgentManager:
     """Process-wide singleton: owns harness HarnessAgentManager + all HarnessAgent instances.
 

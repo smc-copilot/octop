@@ -322,6 +322,7 @@ class AppRuntime:
             self.trajectory_service.replace_store(TrajectoryStore(services.trajectory_event_repo))
 
 
+# @lat: [[layers#Process boot]]
 class OctopServer:
     def __init__(self, home: Path | None = None) -> None:
         self._home = home or PathLayout.from_env().root

@@ -93,6 +93,7 @@ async def _probe_processor(_msg: Any) -> Any:
         yield None
 
 
+# @lat: [[domain#Gateway]]
 class Gateway:
     """Global AI interaction entry point.
 

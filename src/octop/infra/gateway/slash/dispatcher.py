@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     pass
 
 
+# @lat: [[decisions#Slash commands]]
 class SlashDispatcher:
     def __init__(self, runtime: RuntimeSlashDispatcher | None = None) -> None:
         self._handlers: dict[str, GatewayHandler] = {}

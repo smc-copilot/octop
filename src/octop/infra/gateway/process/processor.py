@@ -141,6 +141,7 @@ class _ResolvedModelRoute:
     automatic: bool
 
 
+# @lat: [[message-flow#GlobalProcessor]]
 class GlobalProcessor:
     """Routes InboundMessages by ``tenant_id`` to the correct HarnessAgent."""
 

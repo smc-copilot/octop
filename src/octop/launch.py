@@ -54,6 +54,7 @@ async def _serve(server: Any) -> None:
     await server.serve()
 
 
+# @lat: [[layers#Composition root]]
 async def run_foreground(
     *,
     host: str | None,

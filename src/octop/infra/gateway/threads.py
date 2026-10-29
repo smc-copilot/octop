@@ -10,6 +10,7 @@ from octop.infra.db.repos.threads import ThreadRepo, ThreadRow
 from octop.infra.utils.ulid import new_ulid
 
 
+# @lat: [[domain#Thread]]
 class ThreadRegistry:
     """Maps session_key → active thread_id; threads table holds history metadata."""
 
