@@ -1,0 +1,35 @@
+schema: ges.project.v2
+profile: brownfield-product-app
+agents:
+- cursor
+capabilities:
+  requested:
+  - matt.setup
+  - matt.grill-with-docs
+  - matt.grilling
+  - matt.domain-modeling
+  - matt.codebase-design
+  - matt.to-tickets
+  - speckit.constitution
+  - speckit.specify
+  - speckit.clarify
+  - speckit.plan
+  - superpowers.using-git-worktrees
+  - superpowers.writing-plans
+  - superpowers.subagent-driven-development
+  - superpowers.test-driven-development
+  - superpowers.systematic-debugging
+  - superpowers.requesting-code-review
+  - superpowers.receiving-code-review
+  - superpowers.verification-before-completion
+  - superpowers.finishing-a-development-branch
+  explicitly_disabled: []
+resolution:
+  mode: explicit
+engineering_stack:
+  disciplines:
+    provider: matt
+  intent:
+    provider: spec-kit
+  execution:
+    provider: superpowers

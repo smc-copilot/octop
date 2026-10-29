@@ -1,0 +1,65 @@
+{
+  "schema": "ges.repo-profile.v2",
+  "repository_lifecycle": "brownfield",
+  "layout": "single",
+  "kind": "brownfield",
+  "repository_kind": "brownfield",
+  "agents": [
+    "cursor"
+  ],
+  "languages": [
+    "typescript",
+    "python"
+  ],
+  "spec_kit": false,
+  "legacy_ges": false,
+  "ci": [
+    "github-actions"
+  ],
+  "package_managers": [
+    "npm"
+  ],
+  "frameworks": [],
+  "existing": {
+    "AGENTS.md": true,
+    "CLAUDE.md": false,
+    ".agents": true,
+    ".cursor": true,
+    ".codex": false,
+    ".specify": false,
+    ".smc": false,
+    "CONTEXT.md": false,
+    "CONTEXT-MAP.md": false,
+    "docs/adr": true
+  },
+  "source_roots": [
+    "src"
+  ],
+  "scripts": {
+    "test": [
+      "dashboard/package.json",
+      "plugins/enterprise-knowledge/ui/package.json"
+    ],
+    "build": [
+      "dashboard/package.json",
+      "plugins/enterprise-knowledge/ui/package.json"
+    ],
+    "lint": [
+      "dashboard/package.json"
+    ]
+  },
+  "tsconfig_evidence": [
+    "dashboard/tsconfig.app.json",
+    "dashboard/tsconfig.json",
+    "dashboard/tsconfig.node.json",
+    "plugins/enterprise-knowledge/ui/tsconfig.json"
+  ],
+  "analyzer_version": "6.0.0-alpha.5",
+  "analyzed_at": "2026-10-29T12:54:43.513929+00:00",
+  "git": {
+    "repository": true,
+    "head": "724e33c6cb4f083ea8d69cd3bb416d9388d1655b",
+    "remote": "git@github.com:loudon84/octop.git"
+  },
+  "llm_token_usage": 0
+}

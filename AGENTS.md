@@ -580,3 +580,13 @@ GES manages composition and governance metadata.
 GES does not generate Specs, implementation plans or code.
 
 <!-- ges:v6:engineering-stack:end -->
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in this repo's GitHub Issues (`loudon84/octop`); use the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: root `CONTEXT.md` plus `docs/adr/`. See `docs/agents/domain.md`.
