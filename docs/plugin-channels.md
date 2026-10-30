@@ -1,5 +1,7 @@
 # 第三方通道插件
 
+完整插件包布局、生命周期、CLI/API 与其它 `kind` 见 [内部插件开发者指南](./internal/plugin-developer-guide.md)。
+
 通道插件依赖配套的 harness `kind: channel` 与 gateway 动态注册接口。部署前应先安装包含这些能力的正式版本；本变更不预先填写尚未发布的版本号。
 
 插件通过 `ctx.channel(kind, ChannelClass, label=..., fields=...)` 注册，类必须继承 gateway BaseChannel，并遵循 gateway 的构造与 Config 约定。安装和启用后，Octop 在网关恢复数据库通道之前注册实现。没有表单 schema 时可使用 JSON 配置。
