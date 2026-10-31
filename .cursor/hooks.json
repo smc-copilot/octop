@@ -1,10 +1,5 @@
 {
   "version": 1,
-  "hooks": {
-    "stop": [
-      {
-        "command": "lat hook cursor stop"
-      }
-    ]
+  "hooks": {    
   }
 }

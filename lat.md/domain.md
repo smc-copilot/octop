@@ -42,7 +42,13 @@ Jobs store `session_key` (often the owner's dashboard key). Cron is loaded at bo
 
 Skill packages are DB-tracked packages plus workspace skill trees. Agents reference `skill_package_ids`; SkillHub is the market client under `infra/skills/`.
 
-Builtin and expert library skills ship in-repo; enablement is per-agent. Do not confuse skill package rows with connector MCP tools.
+Builtin and expert library skills ship in-repo; enablement is per-agent. Do not confuse skill package rows with connector MCP tools. Public SkillHub browse/install is governed by [[domain#Market governance]].
+
+## Market governance
+
+Instance `market_mode` plus `skill_market`/`expert_market` permissions and `market_policy_rules` control SkillHub hubs via [[src/octop/infra/market/policy.py#MarketCatalogPolicy]].
+
+Modes: `off` | `public` | `allowlist` | `mirror_only`. Allowlist is default-closed and group-aware; `mirror_only` serves local `published_experts` / skill packages. See `docs/market-governance.md`.
 
 ## Connectors
 
