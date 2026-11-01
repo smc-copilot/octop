@@ -1,0 +1,122 @@
+/* 企业独立 CSS：覆盖 hashed 主题，勿改 core 样式模块。 */
+
+/* ------------------------------------------------------------------ */
+/* 1. 设计 token：更硬的圆角与描边（antd / layout 走 --fn-*）         */
+/* ------------------------------------------------------------------ */
+
+:root,
+html[data-theme="light"],
+html[data-theme="dark"] {
+  --fn-radius-sm: 3px;
+  --fn-radius-md: 5px;
+  --fn-radius-lg: 8px;
+  --fn-radius-xl: 10px;
+  --fn-card-radius: 6px;
+}
+
+:root,
+html[data-theme="light"] {
+  --fn-sidebar-border: #d1d5db;
+  --fn-border-primary: #d1d5db;
+  --fn-border: #d1d5db;
+  --fn-border-color: #d1d5db;
+  --fn-border-strong: #9ca3af;
+  --fn-card-border-normal: #d1d5db;
+  --fn-chat-divider: #d1d5db;
+  --fn-shadow-xs: 0 1px 1px rgba(0, 0, 0, 0.04);
+  --fn-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --fn-card-shadow-normal: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+html[data-theme="dark"] {
+  --fn-sidebar-border: rgba(255, 255, 255, 0.16);
+  --fn-border-primary: rgba(255, 255, 255, 0.16);
+  --fn-border: rgba(255, 255, 255, 0.16);
+  --fn-border-color: rgba(255, 255, 255, 0.16);
+  --fn-border-strong: rgba(255, 255, 255, 0.24);
+  --fn-card-border-normal: rgba(255, 255, 255, 0.16);
+  --fn-chat-divider: rgba(255, 255, 255, 0.16);
+  --fn-shadow-xs: 0 1px 1px rgba(0, 0, 0, 0.35);
+  --fn-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --fn-card-shadow-normal: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+/* ------------------------------------------------------------------ */
+/* 2. 左上角 Logo：圆矩形框（非软圆 blob）                             */
+/*    稳定钩子：img[alt=Octop|octop]、wordmark / pwa 文件名            */
+/* ------------------------------------------------------------------ */
+
+img[alt="Octop"][src*="logo_horizontal"],
+img[alt="octop"][src*="logo_horizontal"] {
+  box-sizing: content-box;
+  padding: 3px 8px;
+  object-fit: contain;
+  border: 1px solid var(--fn-color-brand-border, var(--fn-border-primary));
+  border-radius: 6px;
+  background: color-mix(
+    in srgb,
+    var(--fn-color-brand) 7%,
+    var(--fn-bg-elevated, var(--fn-bg-sidebar))
+  );
+}
+
+/* 侧栏 / 顶栏 wordmark 略收紧；登录页保持原高度 */
+.octop-desktop-drag img[alt="Octop"][src*="logo_horizontal"],
+.octop-layout-header img[alt="octop"][src*="logo_horizontal"] {
+  max-height: 32px;
+}
+
+/* 折叠侧栏：方形圆角框，压过 inline borderRadius: 8 */
+img[alt="Octop"][src*="pwa-192"] {
+  box-sizing: border-box;
+  padding: 2px;
+  border: 1px solid var(--fn-color-brand-border, var(--fn-border-primary));
+  border-radius: 6px !important;
+  background: color-mix(
+    in srgb,
+    var(--fn-color-brand) 8%,
+    var(--fn-bg-elevated, var(--fn-bg-sidebar))
+  );
+  object-fit: contain;
+}
+
+/* 侧栏品牌行底部分割（desktop drag 区；hashed sidebarBrand 可能不存在） */
+.octop-desktop-drag:has(> img[alt="Octop"]),
+[class*="sidebarBrand"] {
+  border-bottom: 1px solid var(--fn-sidebar-border);
+}
+
+/* ------------------------------------------------------------------ */
+/* 3. 布局描边：侧栏 / 顶栏 / 卡片                                     */
+/* ------------------------------------------------------------------ */
+
+.octop-layout-header,
+.octop-layout-header.octop-layout-header {
+  border-bottom-color: var(--fn-border-primary);
+}
+
+.octop-card {
+  border-radius: var(--fn-card-radius);
+  border-color: var(--fn-card-border-normal);
+}
+
+/* ------------------------------------------------------------------ */
+/* 可选：替换 wordmark。将 png 放入本目录后取消下面注释。               */
+/*   ./logo-horizontal-light.png  ./logo-horizontal-dark.png           */
+/* ------------------------------------------------------------------ */
+
+/*
+html[data-theme="light"] img[alt="Octop"][src*="logo_horizontal"],
+html[data-theme="light"] img[alt="octop"][src*="logo_horizontal"] {
+  content: url("./logo-horizontal-light.png");
+}
+
+html[data-theme="dark"] img[alt="Octop"][src*="logo_horizontal"],
+html[data-theme="dark"] img[alt="octop"][src*="logo_horizontal"] {
+  content: url("./logo-horizontal-dark.png");
+}
+
+img[alt="Octop"][src*="pwa-192"] {
+  content: url("./logo-mark.png");
+}
+*/
