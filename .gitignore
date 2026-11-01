@@ -120,3 +120,6 @@ scripts/lh_image_install_octop_tencentos.sh
 
 # lat.md embedding/parse cache (docs themselves are tracked)
 lat.md/.cache/
+
+#只用于本地参考用的示例
+example/
