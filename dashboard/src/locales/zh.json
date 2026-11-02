@@ -1,6 +1,6 @@
 {
   "app": {
-    "pageTitle": "Octop - 懂你、帮你、陪你成长的智能伙伴"
+    "pageTitle": "SMC AI Copilot - 智能伙伴，提高工作效率"
   },
   "layout": {
     "collapsePanel": "收起面板",
@@ -5757,7 +5757,7 @@
   },
   "login": {
     "title": "登录",
-    "subtitle": "懂你、帮你、陪你成长的智能伙伴",
+    "subtitle": "智能伙伴，提高工作效率",
     "username": "用户名或邮箱",
     "password": "密码",
     "remember": "记住登录状态",

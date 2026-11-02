@@ -1,6 +1,6 @@
 {
   "app": {
-    "pageTitle": "Octop - An intelligent partner that understands you, helps you, and grows with you"
+    "pageTitle": "SMC AI Copilot - An intelligent partner that boosts your productivity"
   },
   "layout": {
     "collapsePanel": "Collapse panel",
@@ -5757,7 +5757,7 @@
   },
   "login": {
     "title": "Sign in",
-    "subtitle": "An intelligent partner that understands you, helps you, and grows with you",
+    "subtitle": "An intelligent partner that boosts your productivity",
     "username": "Username or email",
     "password": "Password",
     "remember": "Remember me",
