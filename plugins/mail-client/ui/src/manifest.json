@@ -1,0 +1,8 @@
+{
+  "renderers": [
+    { "id": "mail_inbox_list", "tools": ["mail_list"] },
+    { "id": "mail_message", "tools": ["mail_read"] },
+    { "id": "mail_compose", "tools": ["mail_send"] },
+    { "id": "mail_probe", "tools": ["mail_probe"] }
+  ]
+}

@@ -16,6 +16,7 @@
 | [`demo-greeting-skill`](./demo-greeting-skill/) | `skill` | 向 Agent 工作区同步一份示例 Skill |
 | [`demo-turn-logger`](./demo-turn-logger/) | `hook` | 注册 `AgentMiddleware`，在模型调用前后打日志 |
 | [`demo-ui-card`](./demo-ui-card/) | `tool` + `ui/` | 后端返回 `octop_ui` JSON；前端在聊天页渲染可交互卡片 |
+| [`mail-client`](./mail-client/) | `tool` + `ui/` | 用户配置 POP3 收信 + SMTP 纯文本发信，聊天卡片展示 |
 
 ## 目录约定
 
@@ -74,6 +75,7 @@ octop plugin install ./plugins/demo-toolkit --force
 octop plugin install ./plugins/demo-greeting-skill --force
 octop plugin install ./plugins/demo-turn-logger --force
 octop plugin install ./plugins/demo-ui-card --force
+octop plugin install ./plugins/mail-client --force
 octop plugin list
 ```
 
@@ -113,7 +115,7 @@ uv run python - <<'PY'
 from pathlib import Path
 from octop_harness.plugins import PluginRegistry, load_plugin_dir
 
-for name in ("demo-toolkit", "demo-greeting-skill", "demo-turn-logger", "demo-ui-card"):
+for name in ("demo-toolkit", "demo-greeting-skill", "demo-turn-logger", "demo-ui-card", "mail-client"):
     PluginRegistry.reset()
     p = load_plugin_dir(Path("plugins") / name, install_deps=False)
     print(
@@ -132,3 +134,4 @@ PY
 - `demo-greeting-skill` → `skill`，存在 `skills/`  
 - `demo-turn-logger` → `hook`，1 个 middleware  
 - `demo-ui-card` → `tool`，1 个工具  
+- `mail-client` → `tool`，4 个工具（`mail_list` / `mail_read` / `mail_send` / `mail_probe`）  

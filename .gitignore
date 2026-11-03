@@ -3,6 +3,9 @@ build/
 !desktop/src/build/
 !desktop/src/build/**
 dist/
+# Plugin chat UI ships prebuilt ESM; install does not run npm.
+!plugins/**/ui/dist/
+!plugins/**/ui/dist/**
 
 # OS
 .DS_Store

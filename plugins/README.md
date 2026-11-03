@@ -19,6 +19,7 @@ in `config.json`. Uninstalled ids are not re-copied.
 | [`demo-greeting-skill`](./demo-greeting-skill/) | `skill` | Sync a sample Skill into the agent workspace |
 | [`demo-turn-logger`](./demo-turn-logger/) | `hook` | Register `AgentMiddleware` that logs before/after model calls |
 | [`demo-ui-card`](./demo-ui-card/) | `tool` + `ui/` | Backend returns `octop_ui` JSON; frontend renders an interactive card |
+| [`mail-client`](./mail-client/) | `tool` + `ui/` | User-configured POP3 inbox + SMTP plain-text send, with chat cards |
 
 ## Plugin layout
 
@@ -81,6 +82,7 @@ octop plugin install ./plugins/demo-toolkit --force
 octop plugin install ./plugins/demo-greeting-skill --force
 octop plugin install ./plugins/demo-turn-logger --force
 octop plugin install ./plugins/demo-ui-card --force
+octop plugin install ./plugins/mail-client --force
 octop plugin list
 ```
 
@@ -104,7 +106,7 @@ uv run python - <<'PY'
 from pathlib import Path
 from octop_harness.plugins import PluginRegistry, load_plugin_dir
 
-for name in ("demo-toolkit", "demo-greeting-skill", "demo-turn-logger", "demo-ui-card"):
+for name in ("demo-toolkit", "demo-greeting-skill", "demo-turn-logger", "demo-ui-card", "mail-client"):
     PluginRegistry.reset()
     p = load_plugin_dir(Path("plugins") / name, install_deps=False)
     print(p.manifest.id, p.manifest.kind, len(p.tools))
