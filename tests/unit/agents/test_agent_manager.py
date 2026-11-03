@@ -2847,7 +2847,8 @@ def test_prepare_stream_request_strips_connector_runtime_context(
             "_resume_mcp_context": True,
         },
     )
-    assert req == {"messages": "hi", "agent_id": "01AGENT"}
+    # mcp_servers stays for harness MCPToolMiddleware; only Octop-only keys are stripped.
+    assert req == {"messages": "hi", "agent_id": "01AGENT", "mcp_servers": ["docs__1"]}
 
 
 def test_prepare_stream_request_maps_model_settings_and_max_input_tokens(

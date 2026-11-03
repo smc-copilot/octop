@@ -4938,10 +4938,10 @@ class AgentManager:
         from octop_harness.plugins import collect_plugin_tool_configs  # noqa: PLC0415
 
         req = dict(request)
-        # These values are trusted Octop runtime context consumed at the
-        # execution boundary, not fields in octop-harness' ChatRequest schema.
+        # Octop-only runtime context for the execution boundary. Keep
+        # ``mcp_servers`` — harness ChatRequest uses it so MCPToolMiddleware
+        # can expose the tools installed by ``_turn_mcp_tools``.
         req.pop("connector_user_id", None)
-        req.pop("mcp_servers", None)
         req.pop("_resume_mcp_context", None)
         if req.get("agent_id") is None:
             req["agent_id"] = agent_id

@@ -56,6 +56,8 @@ Connectors cover OAuth/MCP catalog metadata, credential crypto, and MCP gateway 
 
 HTTP surface is `api/routers/connectors.py`. Agent start assembles MCP servers from connector bindings rather than hard-coding vendor SDKs in the harness.
 
+Chat turns install selected servers via [[src/octop/infra/agents/manager.py#AgentManager#_turn_mcp_tools]] / `prepare_chat_mcp`, then pass `mcp_servers` into harness so `MCPToolMiddleware` can expose them. [[src/octop/infra/agents/manager.py#AgentManager#_prepare_stream_request]] strips only Octop-only keys (`connector_user_id`, `_resume_mcp_context`) — not `mcp_servers`.
+
 ## Users and auth
 
 [[src/octop/infra/users/manager.py#UserManager]] owns password hashing, roles, and preferences (including locale). Dashboard/API auth is JWT via `api/deps.py` and middleware.
