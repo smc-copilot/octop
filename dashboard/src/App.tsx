@@ -19,6 +19,7 @@ import OidcComplete from "./pages/Login/OidcComplete";
 import SetupPage from "./pages/Setup";
 import InvitePage from "./pages/Invite";
 import AuthGuard from "./components/AuthGuard";
+import WeKnoraWidget from "./components/WeKnoraWidget";
 import OctopSpinner from "./components/OctopSpinner";
 import { AntdAppProvider } from "./components/AntdAppProvider";
 import GlobalErrorBoundary from "./components/ErrorBoundary";
@@ -145,6 +146,7 @@ function ThemedApp() {
                     <LayoutModeProvider>
                       <VoiceOutputProvider>
                         <MainLayout />
+                        <WeKnoraWidget />
                       </VoiceOutputProvider>
                     </LayoutModeProvider>
                   </AgentProvider>
