@@ -311,5 +311,23 @@
     </script>
     <script type="module" src="/src/main.tsx"></script>
     <link rel="stylesheet" href="%BASE_URL%branding/enterprise.css" />
+    <!-- WeKnora floating chat widget: launcher 200px above bottom-right -->
+    <style id="weknora-widget-offset">
+      button[aria-label="芯助手"] {
+        bottom: 200px !important;
+      }
+      /* panel sits above the 56px launcher (widget default gap ≈ 64px) */
+      body > div:has(> iframe[src*="weknora.superic.com"]) {
+        bottom: 264px !important;
+      }
+    </style>
+    <script
+      src="http://weknora.superic.com:18080/weknora-widget.js"
+      data-channel="5f44f925-5304-47bb-930e-408bc8ac4886"
+      data-token="em_PBugOUedW6jZGgiN4kuOxIRjlPVqZtqRanWMHko2_Nk"
+      data-position="bottom-right"
+      data-primary-color="#07c05f"
+      data-title="芯助手"
+    ></script>
   </body>
 </html>
