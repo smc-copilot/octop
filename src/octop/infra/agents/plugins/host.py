@@ -1208,6 +1208,101 @@ class PluginHostFacade:
             raise PluginHostError("not_found")
         return action.permission
 
+    # Connector kinds/tools plugins may invoke through the host bridge (PRD D8).
+    # Write tools and credential fields are never exposed here.
+    _CONNECTOR_READ_WHITELIST: dict[str, frozenset[str]] = {
+        "qq-mail": frozenset({"search_emails", "read_email"}),
+    }
+
+    async def invoke_connector_read_tool(
+        self,
+        actor: PluginActor,
+        kind: str,
+        tool: str,
+        args: Mapping[str, Any] | None = None,
+        *,
+        instance_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Call a whitelisted connector read tool as *actor*'s own instance.
+
+        Credentials never leave the connector crypto store into the return
+        value. Missing personal instances raise ``PluginActionError`` with a
+        connector-config guide message (PRE-5 / LIST-6).
+        """
+        self._check()
+        if not isinstance(actor, PluginActor):
+            raise PluginHostError("invalid")
+        if not isinstance(kind, str) or not kind or not isinstance(tool, str) or not tool:
+            raise PluginHostError("invalid")
+        allowed = self._CONNECTOR_READ_WHITELIST.get(kind)
+        if allowed is None or tool not in allowed:
+            raise PluginHostError("denied")
+        if instance_id is not None and (
+            not isinstance(instance_id, str) or not instance_id or "/" in instance_id
+        ):
+            raise PluginHostError("invalid")
+        await self._host.authorize_actor(actor, "authenticated")
+        services = self._require_services()
+        payload_args = dict(args or {})
+
+        def run() -> dict[str, Any]:
+            from octop.i18n import tr
+            from octop.infra.connectors.crypto import decrypt_credentials
+            from octop.infra.connectors.gateway.registry import call_gateway_tool
+
+            rows = [
+                row
+                for row in services.connector_repo.list_by_user(actor.user_id)
+                if row.kind == kind and row.status == "active" and row.user_id == actor.user_id
+            ]
+            if instance_id is not None:
+                rows = [row for row in rows if row.instance_id == instance_id]
+            if not rows:
+                raise PluginActionError(
+                    "CONNECTOR_NOT_CONFIGURED",
+                    tr("connector.qq_mail.connect_guide", actor.locale),
+                    status=400,
+                )
+            row = rows[0]
+            if not row.credential_blob:
+                raise PluginActionError(
+                    "CONNECTOR_NOT_CONFIGURED",
+                    tr("connector.qq_mail.connect_guide", actor.locale),
+                    status=400,
+                )
+            try:
+                creds = decrypt_credentials(services.secret_repo, row.credential_blob)
+            except Exception:
+                raise PluginHostError("unavailable") from None
+            if not isinstance(creds, dict):
+                raise PluginHostError("unavailable")
+            call_creds = dict(creds)
+            call_creds["_locale"] = actor.locale
+            call_creds["_user_id"] = actor.user_id
+            call_creds["_instance_id"] = row.instance_id
+            # Never forward caller-controlled credential keys.
+            for key in ("password", "credential_blob", "internal_token", "access_token"):
+                payload_args.pop(key, None)
+            try:
+                text = call_gateway_tool(kind, call_creds, tool, payload_args)
+            except PluginActionError:
+                raise
+            except Exception as exc:
+                # Surface adapter ValueError as a safe action error; never echo args.
+                message = str(exc).strip() or tr("connector.qq_mail.invalid_arguments", actor.locale)
+                if len(message) > 400:
+                    message = message[:400]
+                raise PluginActionError("CONNECTOR_TOOL_FAILED", message, status=400) from None
+            try:
+                parsed = json.loads(text)
+            except (TypeError, ValueError):
+                raise PluginHostError("unavailable") from None
+            if not isinstance(parsed, dict):
+                raise PluginHostError("unavailable")
+            return _sanitize_connector_bridge_payload(parsed)
+
+        return await self._run(run)
+
     async def invoke_action(
         self, name: str, actor: PluginActor, payload: Mapping[str, Any]
     ) -> dict[str, Any]:
@@ -1850,6 +1945,8 @@ class PluginHostFacade:
 
         try:
             result = cast(_T, await loop.run_in_executor(None, run_with_lease))
+        except PluginActionError:
+            raise
         except PluginHostError:
             raise
         except Exception as exc:
@@ -1989,6 +2086,39 @@ def _validate_preallocated_credential_id(credential_id: str) -> None:
         raise PluginHostError("invalid") from None
     if parsed.version != 4 or str(parsed) != credential_id:
         raise PluginHostError("invalid")
+
+
+_CREDENTIAL_KEYS = frozenset(
+    {
+        "password",
+        "credential_blob",
+        "internal_token",
+        "access_token",
+        "refresh_token",
+        "client_secret",
+        "authorization_code",
+    }
+)
+
+
+def _sanitize_connector_bridge_payload(value: Any) -> dict[str, Any]:
+    """Drop credential-like keys from a connector tool envelope before return."""
+
+    def scrub(node: Any) -> Any:
+        if isinstance(node, Mapping):
+            return {
+                str(key): scrub(item)
+                for key, item in node.items()
+                if str(key) not in _CREDENTIAL_KEYS
+            }
+        if isinstance(node, list):
+            return [scrub(item) for item in node]
+        return node
+
+    cleaned = scrub(value)
+    if not isinstance(cleaned, dict):
+        raise PluginHostError("unavailable")
+    return cleaned
 
 
 def _validate_write(write: RecordWrite) -> RecordWrite:

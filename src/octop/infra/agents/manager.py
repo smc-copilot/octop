@@ -5331,7 +5331,7 @@ class AgentManager:
             harness_cfg.tools_disabled = frozenset(disabled)
         applied = policy.apply_to_config(harness_cfg)
         applied = self._apply_team_host_config(applied, row)
-        applied = self._merge_agently_write_interrupts(
+        applied = self._merge_gateway_write_interrupts(
             applied, self._connector_uid_for(row) if not team_host else None
         )
         interrupt_on = apply_session_bypass(applied.interrupt_on, self._hitl_session_store)
@@ -5410,28 +5410,44 @@ class AgentManager:
             ),
         )
 
-    def _agently_write_interrupts(self, user_id: int | None) -> dict[str, Any]:
-        from octop.infra.connectors.gateway.adapters.agently_cli import write_interrupt_on
+    def _gateway_write_interrupts(self, user_id: int | None) -> dict[str, Any]:
+        from octop.infra.connectors.gateway.adapters import agently_cli, qq_mail
 
         if user_id is None:
             return {}
         if not self._repos.connector_repo.connector_feature_allows(user_id):
             return {}
-        return write_interrupt_on(
-            [
-                inst.mcp_server_name
-                for inst in self._repos.connector_repo.list_visible(user_id)
-                if inst.kind == "agently-cli" and inst.status == "active"
-            ]
-        )
+        visible = [
+            inst
+            for inst in self._repos.connector_repo.list_visible(user_id)
+            if inst.status == "active"
+        ]
+        extra: dict[str, Any] = {}
+        agently_names = [inst.mcp_server_name for inst in visible if inst.kind == "agently-cli"]
+        if agently_names:
+            extra.update(agently_cli.write_interrupt_on(agently_names))
+        qq_names = [inst.mcp_server_name for inst in visible if inst.kind == "qq-mail"]
+        if qq_names:
+            extra.update(qq_mail.write_interrupt_on(qq_names))
+        return extra
 
-    def _merge_agently_write_interrupts(
+    # Compat alias for older call sites / tests.
+    def _agently_write_interrupts(self, user_id: int | None) -> dict[str, Any]:
+        return self._gateway_write_interrupts(user_id)
+
+    def _merge_gateway_write_interrupts(
         self, cfg: HarnessAgentConfig, user_id: int | None
     ) -> HarnessAgentConfig:
-        extra = self._agently_write_interrupts(user_id)
+        extra = self._gateway_write_interrupts(user_id)
         if not extra:
             return cfg
         return replace(cfg, interrupt_on={**(cfg.interrupt_on or {}), **extra})
+
+    # Compat alias for older call sites / tests.
+    def _merge_agently_write_interrupts(
+        self, cfg: HarnessAgentConfig, user_id: int | None
+    ) -> HarnessAgentConfig:
+        return self._merge_gateway_write_interrupts(cfg, user_id)
 
     def _apply_team_host_config(self, cfg: HarnessAgentConfig, row: Any) -> HarnessAgentConfig:
         from octop.infra.agents.teams import host_system_prompt, host_tools_disabled, is_team_agent

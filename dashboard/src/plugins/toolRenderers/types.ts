@@ -122,6 +122,8 @@ export interface ToolRenderProps {
   isStreaming: boolean;
   hideMediaPreview?: boolean;
   onAcpPermissionSelect?: (message: string) => void;
+  /** Prefill a user chat message (alias of ``onAcpPermissionSelect``). */
+  onSendMessage?: (message: string) => void;
   agentId?: string | null;
 }
 

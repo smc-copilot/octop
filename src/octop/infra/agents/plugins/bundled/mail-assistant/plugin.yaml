@@ -1,0 +1,11 @@
+id: mail-assistant
+version: 0.1.0
+name: 邮件助手
+description: 个人邮箱列表、阅读与回复技能；在聊天中展示邮件卡片（凭据走连接器）
+icon: "✉️"
+group: productivity
+kind: skill
+entry: main.py
+ui:
+  entry: ui/index.js
+  manifest: ui/manifest.json

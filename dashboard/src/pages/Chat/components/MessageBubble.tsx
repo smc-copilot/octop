@@ -593,6 +593,7 @@ export function ToolDetailsInline({
     isStreaming,
     hideMediaPreview,
     onAcpPermissionSelect,
+    onSendMessage: onAcpPermissionSelect,
     agentId,
   };
 

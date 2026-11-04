@@ -1,0 +1,82 @@
+{
+  "id": "mail-expert",
+  "scene": "productivity",
+  "label": {
+    "zh": "邮件专家",
+    "en": "Mail Expert"
+  },
+  "description": {
+    "zh": "在对话中查看个人邮箱、筛选未读/发件人/日期、阅读正文，并用专家技能分析与起草回复；发送走连接器两阶段确认。",
+    "en": "Browse your personal mailbox in chat — filter unread/from/date, read messages, analyze and draft replies with expert skills; send via connector two-phase confirmation."
+  },
+  "welcome_message": {
+    "zh": "请先在「连接器」中配置个人邮箱并完成探测，再选择该连接器。需要我列出收件箱，或帮你分析/回复某封邮件吗？",
+    "en": "Configure your personal mailbox under Connectors and complete the probe, then select that connector. Shall I list your inbox, or analyze/reply to a message?"
+  },
+  "icon_name": "mail",
+  "color": "#0ea5e9",
+  "prompt_files": [
+    "SOUL.md",
+    "IDENTITY.md"
+  ],
+  "quick_prompts": [
+    {
+      "title": {
+        "zh": "列出最近邮件",
+        "en": "List recent mail"
+      },
+      "description": {
+        "zh": "用邮件卡片展示收件箱近期邮件",
+        "en": "Show recent inbox messages in a mail card"
+      },
+      "prompt": {
+        "zh": "请用 search_emails 列出我收件箱最近的邮件，并以邮件卡片展示。",
+        "en": "Please list my recent inbox messages with search_emails and show them in the mail card."
+      },
+      "color": "#e0f2fe",
+      "icon_name": "inbox"
+    },
+    {
+      "title": {
+        "zh": "只看未读",
+        "en": "Unread only"
+      },
+      "description": {
+        "zh": "过滤未读邮件",
+        "en": "Filter to unread messages"
+      },
+      "prompt": {
+        "zh": "请列出我的未读邮件（unread=true），用卡片展示。",
+        "en": "Please list my unread emails (unread=true) in the mail card."
+      },
+      "color": "#fef3c7",
+      "icon_name": "mail"
+    },
+    {
+      "title": {
+        "zh": "如何配置邮箱",
+        "en": "How to connect mailbox"
+      },
+      "description": {
+        "zh": "引导去连接器配置个人邮箱",
+        "en": "Guide to Connectors for personal mailbox setup"
+      },
+      "prompt": {
+        "zh": "请告诉我如何在连接器中配置个人邮箱并完成探测，以便使用邮件专家。",
+        "en": "Please explain how to configure my personal mailbox in Connectors and complete the probe so I can use the Mail Expert."
+      },
+      "color": "#f1f5f9",
+      "icon_name": "settings"
+    }
+  ],
+  "task_examples": {
+    "zh": [
+      "每个工作日「09:00」汇总未读邮件主题列表（只读，不自动回复）",
+      "每周一「10:00」列出过去 7 天来自指定发件人的邮件摘要"
+    ],
+    "en": [
+      "Every weekday at 09:00, summarize unread subjects (read-only, never auto-reply)",
+      "Every Monday at 10:00, summarize emails from a given sender over the past 7 days"
+    ]
+  }
+}

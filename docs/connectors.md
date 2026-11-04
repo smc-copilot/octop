@@ -90,6 +90,28 @@ Optional: `quick_auth_url`, `login_url`, `guide_url`, `manual_url`, `auth_hint`,
 `credential_fields[]` items: `key`, `label`; optional `field_type` (`text` /
 `password` / `url` / `tags`), `required`, `placeholder`, `help`, `secret`.
 
+## Personal mailbox (`qq-mail`) / 个人邮箱
+
+Gateway adapter: [`qq_mail.py`](../src/octop/infra/connectors/gateway/adapters/qq_mail.py).
+IMAP + SMTP only (no POP3 in this release). Tools return an `octop_ui` envelope
+(`renderer: mail_card`) plus a plain `text` fallback for IM.
+
+| Tool | Notes |
+|------|--------|
+| `search_emails` | Prefer structured filters: `unread`, `from`, `since_days`, `limit`. Date bounds use server `default_timezone`. |
+| `read_email` | UID fetch via `BODY.PEEK[]` (does not set `\Seen`). HTML is stripped to text; attachments list filenames only. |
+| `send_email` | Two-phase: dry-run returns `confirmation_token`; confirm call triggers chat HITL, then SMTP send. |
+| `reply_email` | Reply by UID with server-built `Re:` / `In-Reply-To` / `References`; same two-phase confirmation. |
+
+Pending confirmations live in an in-process memory table
+([`confirmations.py`](../src/octop/infra/connectors/gateway/confirmations.py), TTL ≈ 300s, one-shot).
+Plugin UIs may call only the read tools through
+`PluginHostFacade.invoke_connector_read_tool` (whitelist), scoped to the
+caller's own connector instance.
+
+Mail Expert packaging: bundled plugin `mail-assistant` (skills + `mail_card` UI)
+and expert library `mail-expert`. See `feature/docs/邮件专家功能需求PRD.md`.
+
 ## Deep dives / 深入说明
 
 - [Agent Mail CLI](connectors-agently-mail.md)
