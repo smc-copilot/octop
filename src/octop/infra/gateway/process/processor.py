@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal
@@ -1590,6 +1590,7 @@ class GlobalProcessor:
         thread_id: str,
         user_id: int,
         decisions: list[dict[str, Any]],
+        on_admitted: Callable[[], Any] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Resume a dashboard HITL turn with the normal history bookkeeping."""
         usage_tracker = UsageTracker()
@@ -1607,6 +1608,7 @@ class GlobalProcessor:
                     agent_id,
                     thread_id,
                     decisions,
+                    on_admitted=on_admitted,
                 ),
                 thread_id=thread_id,
                 policies=self._hitl.session_policies,

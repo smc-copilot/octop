@@ -82,3 +82,44 @@ async def test_hitl_resume_records_final_answer_in_thread_history() -> None:
         "Here is the completed itinerary."
     )
     usage_repo.record.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_hitl_resume_forwards_on_admitted() -> None:
+    captured: dict[str, object] = {}
+
+    async def _resume(*_args: object, **kwargs: object):
+        captured.update(kwargs)
+        yield {"type": "token", "content": "ok"}
+
+    def _on_admitted() -> None:
+        return None
+
+    agent_manager = MagicMock()
+    agent_manager.resume_hitl = _resume
+    processor = GlobalProcessor(
+        agent_manager=agent_manager,
+        thread_registry=MagicMock(),
+        audit_repo=MagicMock(),
+        agent_repo=MagicMock(),
+        user_repo=MagicMock(),
+        connector_repo=MagicMock(),
+        dispatcher=SlashDispatcher(),
+        usage_repo=MagicMock(),
+        thread_message_repo=MagicMock(),
+        gateway=None,
+    )
+
+    chunks = [
+        chunk
+        async for chunk in processor.iter_hitl_resume_chunks(
+            agent_id="agent-1",
+            thread_id="thread-1",
+            user_id=7,
+            decisions=[{"type": "respond", "message": "nature"}],
+            on_admitted=_on_admitted,
+        )
+    ]
+
+    assert [chunk["type"] for chunk in chunks] == ["token"]
+    assert captured["on_admitted"] is _on_admitted
