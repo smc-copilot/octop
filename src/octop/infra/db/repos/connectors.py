@@ -6,6 +6,7 @@ import json
 import sqlite3
 import time
 from dataclasses import dataclass
+from typing import Any
 
 try:
     from psycopg import errors as pg_errors
@@ -36,7 +37,6 @@ class ConnectorRow:
 
     @classmethod
     def from_row(cls, r: DbRow) -> ConnectorRow:
-        blob = r["credential_blob"]
         return cls(
             id=r["id"],
             instance_id=r["instance_id"],
@@ -46,7 +46,7 @@ class ConnectorRow:
             status=r["status"],
             shared=bool(r["shared"]),
             mcp_server_name=r["mcp_server_name"],
-            credential_blob=bytes(blob) if blob is not None else None,
+            credential_blob=_coerce_credential_blob(r["credential_blob"]),
             credential_expires_at=r["credential_expires_at"],
             credential_rotated_at=r["credential_rotated_at"],
             config_json=r["config_json"],
@@ -57,6 +57,20 @@ class ConnectorRow:
     @property
     def has_credentials(self) -> bool:
         return bool(self.credential_blob)
+
+
+def _coerce_credential_blob(blob: Any) -> bytes | None:
+    """Normalize a credential value read from SQLite or PostgreSQL.
+
+    A pre-1.0.3 custom-MCP save bound a ``str``. SQLite kept it as TEXT, and
+    ``bytes(str)`` then failed every connector read. Fernet tokens are ASCII,
+    so UTF-8 is the same conversion as ``CAST(x AS BLOB)``.
+    """
+    if blob is None:
+        return None
+    if isinstance(blob, str):
+        return blob.encode("utf-8")
+    return bytes(blob)
 
 
 @dataclass(frozen=True)

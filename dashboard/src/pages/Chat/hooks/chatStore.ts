@@ -10,6 +10,7 @@
 import { getApiUrl } from "../../../api/config";
 import { getAuthToken } from "../../../api/request";
 import type { TokenUsage } from "../../../api/types";
+import { octopThreadsApi } from "../../../api/modules/octopThreads";
 import { buildDashboardChatWsUrl } from "../../../api/modules/wsChat";
 import { rewritePeerSpeakerId } from "../../../utils/remoteExpert";
 import { generateId } from "../../../utils/messageParser";
@@ -50,6 +51,15 @@ import {
   promoteAskUserToolMessage,
 } from "../utils/pendingHitl";
 import { frameBelongsToThread } from "./frameThread";
+import { inFlightTail, preferLocalTranscript } from "../utils/mergeHistoryTail";
+import { clipThreadTitle } from "../utils/threadTitle";
+import {
+  clearInflightTail,
+  flushInflightTail,
+  hasInflightTail,
+  moveInflightTail,
+  scheduleInflightTail,
+} from "../utils/inflightTranscriptCache";
 import {
   MAX_STREAM_RESUME_ATTEMPTS,
   STREAM_STALE_WITHOUT_SOCKET_MS,
@@ -96,6 +106,14 @@ export function setFocusedChatSession(sessionId: string | null): void {
   focusedChatSessionId = next;
   if (prev && prev !== next) {
     const prevState = sessionStates.get(prev);
+    if (
+      prevState &&
+      (prevState.isStreaming ||
+        prevState.messages.some((message) => message.status === "streaming") ||
+        hasInflightTail(prev))
+    ) {
+      flushInflightTail(prev, inFlightTail(prevState.messages));
+    }
     // Listen sockets stay open after a turn so late team replies can land.
     // Leaving the room drops that idle bind; an in-flight turn keeps resume.
     if (!prevState?.isStreaming) {
@@ -271,6 +289,25 @@ const EMPTY_SNAPSHOT: SessionSnapshot = Object.freeze({
 });
 
 const sessionStates = new Map<string, SessionStreamState>();
+
+function flushLiveInflight(): void {
+  for (const [sessionId, state] of sessionStates) {
+    const live =
+      state.isStreaming ||
+      state.liveSpeakers.size > 0 ||
+      state.messages.some((message) => message.status === "streaming") ||
+      hasInflightTail(sessionId);
+    if (!live) continue;
+    flushInflightTail(sessionId, inFlightTail(state.messages));
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", flushLiveInflight);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushLiveInflight();
+  });
+}
 /** Per-call samples let reconnects replace replayed usage instead of double-counting. */
 const usageSamplesByState = new WeakMap<
   SessionStreamState,
@@ -279,11 +316,6 @@ const usageSamplesByState = new WeakMap<
 
 // ── Tool / stream event hooks (for cross-module bridging) ──
 export type ToolEventKind = "toolStart" | "toolDone";
-export type TurnExecutionOptions = {
-  pluginContext?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
-  delivery?: "follow_up";
-  onOutcome?: (outcome: "complete" | "rejected" | "uncertain") => void;
-};
 export interface ToolEvent {
   kind: ToolEventKind;
   sessionId: string;
@@ -363,12 +395,19 @@ function emitSlashAction(event: SlashActionEvent) {
 }
 
 // Session lifecycle events (e.g. deletion) for cross-module bridging.
-export type SessionEventKind = "sessionDeleted" | "sessionsChanged";
+export type SessionEventKind =
+  | "sessionDeleted"
+  | "sessionsChanged"
+  | "sessionRenamed";
 export interface SessionEvent {
   kind: SessionEventKind;
   sessionId: string;
   /** Owning agent, when the event comes from a server push. */
   agentId?: string;
+  /** New thread title from a ``thread_title`` frame. */
+  title?: string;
+  /** Local clipped question shown until the server title arrives. */
+  provisional?: boolean;
 }
 type SessionEventListener = (event: SessionEvent) => void;
 const sessionEventListeners = new Set<SessionEventListener>();
@@ -389,6 +428,51 @@ export function emitSessionEvent(event: SessionEvent) {
       /* ignore */
     }
   }
+}
+
+function applyThreadTitleFrame(data: Record<string, unknown>): boolean {
+  if (data.type !== "thread_title") return false;
+  const title = typeof data.title === "string" ? data.title.trim() : "";
+  const threadId =
+    typeof data.thread_id === "string" ? data.thread_id.trim() : "";
+  const agentId = typeof data.agent_id === "string" ? data.agent_id.trim() : "";
+  if (title && threadId) {
+    emitSessionEvent({
+      kind: "sessionRenamed",
+      sessionId: threadId,
+      title,
+      ...(agentId ? { agentId } : {}),
+    });
+  }
+  return true;
+}
+
+const TITLE_SETTLE_DELAYS_MS = [1000, 2000, 4000, 8000];
+
+/** Read the stored title after the socket that carried the turn has closed. */
+function settleGeneratedTitle(agentId: string, threadId: string): void {
+  if (!agentId || !threadId || threadId.startsWith("__")) return;
+  void (async () => {
+    for (const delay of TITLE_SETTLE_DELAYS_MS) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      try {
+        const rows = await octopThreadsApi.list(agentId, 50);
+        const title = rows
+          .find((row) => row.thread_id === threadId)
+          ?.title?.trim();
+        if (!title) continue;
+        emitSessionEvent({
+          kind: "sessionRenamed",
+          sessionId: threadId,
+          agentId,
+          title,
+        });
+        return;
+      } catch {
+        // The next attempt still covers a title that lands after this miss.
+      }
+    }
+  })();
 }
 
 function buildSnapshot(state: SessionStreamState): SessionSnapshot {
@@ -467,6 +551,7 @@ function getOrCreate(sessionId: string): SessionStreamState {
   let state = sessionStates.get(sessionId);
   if (!state) {
     state = {
+      sessionKey: sessionId,
       messages: [],
       isStreaming: false,
       thinkingStartedAt: null,
@@ -492,6 +577,9 @@ function getOrCreate(sessionId: string): SessionStreamState {
       pendingSteers: [],
     };
     sessionStates.set(sessionId, state);
+  }
+  if (!state.sessionKey || !sessionId.startsWith("__")) {
+    state.sessionKey = sessionId;
   }
   if (!state.pendingSteers) state.pendingSteers = [];
   return state;
@@ -526,16 +614,35 @@ function publish(state: SessionStreamState): void {
   }
 }
 
+function rememberInflight(state: SessionStreamState): void {
+  const sessionId = state.sessionKey || "";
+  if (!sessionId || sessionId.startsWith("__")) return;
+  const live =
+    state.isStreaming ||
+    state.liveSpeakers.size > 0 ||
+    state.messages.some((message) => message.status === "streaming");
+  const tail = inFlightTail(state.messages);
+  if (live) {
+    scheduleInflightTail(sessionId, tail);
+    return;
+  }
+  if (hasInflightTail(sessionId)) {
+    flushInflightTail(sessionId, tail);
+  }
+}
+
 function notify(state: SessionStreamState) {
   // Rebuild the snapshot reference so useSyncExternalStore sees the change.
   cancelStreamPaint(state);
   state._snapshot = buildSnapshot(state);
+  rememberInflight(state);
   publish(state);
 }
 
 /** Coalesce high-frequency stream fragments onto one paint. */
 function notifyStreamingPaint(state: SessionStreamState): void {
   state._snapshot = buildSnapshot(state);
+  rememberInflight(state);
   if (streamPaintTimers.has(state)) return;
   streamPaintTimers.set(
     state,
@@ -721,20 +828,6 @@ export function getSnapshot(sessionId: string): SessionSnapshot {
   return state._snapshot;
 }
 
-/** Check dispatch blockers from the target session, independent of the visible route. */
-export function isSessionBusyForTurnDispatch(
-  sessionId: string,
-  hostAgentId?: string,
-): boolean {
-  const state = getOrCreate(sessionId);
-  if (state.isStreaming || hasPendingHitl(state.messages)) return true;
-  const hostId =
-    hostAgentId?.trim() || sessionHostAgentId(state, sessionId)?.trim() || "";
-  return [...state.liveSpeakers].some(
-    (speaker) => speaker.trim() && speaker !== hostId,
-  );
-}
-
 /** Remember or clear the pending plan file for the PlanReady card. */
 export function setPendingPlanPath(
   sessionId: string,
@@ -772,6 +865,19 @@ export function setHistoryPage(
   state.historyLoadingMore = false;
   state.historyHydrated = true;
   state.historyStale = false;
+  notify(state);
+}
+
+/** Put a cached in-flight tail back when it is longer than what is on screen. */
+export function restoreInflightTail(
+  sessionId: string,
+  tail: ChatMessage[],
+): void {
+  const state = sessionStates.get(sessionId);
+  if (!state || tail.length === 0) return;
+  const next = preferLocalTranscript(state.messages, tail);
+  if (next === state.messages) return;
+  state.messages = next;
   notify(state);
 }
 
@@ -914,6 +1020,7 @@ export function clearMessages(sessionId: string) {
   state.historyLoadingMore = false;
   state.historyHydrated = false;
   state.historyStale = false;
+  clearInflightTail(sessionId);
   notify(state);
 }
 
@@ -995,6 +1102,7 @@ export function removeSession(sessionId: string) {
   pendingResumeBySession.delete(sessionId);
   clearStreamActivity(sessionId);
   clearStreamWatchdog(sessionId);
+  clearInflightTail(sessionId);
   closeLiveSocket(sessionId, { intentional: true, userCancelled: true });
 }
 
@@ -1044,6 +1152,8 @@ export function renameSessionKey(oldId: string, newId: string) {
     if (focusedChatSessionId === oldId) {
       focusedChatSessionId = newId;
     }
+    state.sessionKey = newId;
+    moveInflightTail(oldId, newId);
     // Notify listeners so that components subscribed under the new key
     // (after a navigate) immediately see the existing messages.
     notify(state);
@@ -1371,7 +1481,7 @@ function handleHarnessChunk(
             : "";
         state.pendingPlanPath = pending || null;
       }
-      if (chunk.team_wrapup) {
+      if (Boolean(chunk.team_wrapup)) {
         finalizeWrapupMessages(state, speaker);
         clearSpeakerLive(state, speaker);
         // Wrap-up means members already finished — drop stale live bits
@@ -1397,6 +1507,9 @@ function handleHarnessChunk(
         speaker,
         sessionHostAgentId(state, sessionId),
       );
+      if (typeof chunk.duration_ms === "number") {
+        stampTurnDuration(state, chunk.duration_ms, speaker, sessionId);
+      }
       clearSpeakerLive(state, speaker);
       // Host done seals the segment. When a logical steer turn is still
       // active, keep isStreaming / activeTurnId so 排队 stays available and
@@ -2239,12 +2352,8 @@ function closeToolCall(
  * (merges into ``octop_ui`` JSON ``data`` when present). Searches the focused
  * session first, then any live session that owns the call id.
  */
-export function patchToolResultData(
-  callId: string,
-  nextData: unknown,
-  targetSessionId?: string,
-): boolean {
-  if (!callId) return false;
+export function patchToolResultData(callId: string, nextData: unknown): void {
+  if (!callId) return;
 
   const tryPatch = (sessionId: string): boolean => {
     const state = sessionStates.get(sessionId);
@@ -2274,13 +2383,11 @@ export function patchToolResultData(
     return true;
   };
 
-  if (targetSessionId !== undefined) return tryPatch(targetSessionId);
   const focused = getFocusedChatSession();
-  if (focused && tryPatch(focused)) return true;
+  if (focused && tryPatch(focused)) return;
   for (const sessionId of sessionStates.keys()) {
-    if (tryPatch(sessionId)) return true;
+    if (tryPatch(sessionId)) return;
   }
-  return false;
 }
 
 /** Seal only the host wrap-up bubble so dispatch can keep streaming. */
@@ -2309,6 +2416,33 @@ function finalizeHostTurn(state: SessionStreamState, sessionId?: string): void {
   const hostId = sessionHostAgentId(state, sessionId);
   finalizeStreamingMessages(state, hostId, hostId);
   if (hostId) finalizeStreamingMessages(state, undefined, hostId);
+}
+
+function stampTurnDuration(
+  state: SessionStreamState,
+  durationMs: number,
+  speaker: string | undefined,
+  sessionId?: string,
+): void {
+  if (!Number.isFinite(durationMs) || durationMs < 0) return;
+  const hostId = sessionHostAgentId(state, sessionId);
+  const rounded = Math.round(durationMs);
+  for (let index = state.messages.length - 1; index >= 0; index -= 1) {
+    const message = state.messages[index];
+    if (message.role !== "assistant" || message.toolData) continue;
+    if (
+      !speakerMatchesFinalize(
+        message.speakerAgentId,
+        speaker,
+        hostId,
+        Boolean(state.isTeamRoom),
+      )
+    ) {
+      continue;
+    }
+    state.messages[index] = { ...message, durationMs: rounded };
+    return;
+  }
 }
 
 /** Mark still-streaming assistant bubbles as done for one speaker (or host). */
@@ -2677,6 +2811,7 @@ export async function attachThread(
         const data = JSON.parse(String(event.data)) as Record<string, unknown>;
         if (!data || typeof data !== "object") return;
         if (!frameBelongsToThread(data, live.threadId)) return;
+        if (applyThreadTitleFrame(data)) return;
 
         if (data.type === "turn_status") {
           if (turnStatusAction(Boolean(data.active)) === "expect_stream") {
@@ -2861,7 +2996,7 @@ async function sendTurnWebSocket(
   reasoningEffort?: string | null,
   conversationMode?: "ask" | "plan" | "craft" | null,
   hitlPolicy?: { mode: string; tools?: string[] } | null,
-  executionOptions?: TurnExecutionOptions,
+  clientMessageId?: string | null,
 ): Promise<boolean> {
   const state = getOrCreate(sessionId);
   const resolvedThreadId = (threadId || sessionId).trim();
@@ -2874,7 +3009,6 @@ async function sendTurnWebSocket(
   return new Promise((resolve) => {
     const ws = tryOpenDashboardWs(agentId);
     if (!ws) {
-      executionOptions?.onOutcome?.("rejected");
       resolve(false);
       return;
     }
@@ -2890,13 +3024,6 @@ async function sendTurnWebSocket(
     liveSockets.set(sessionId, live);
 
     let settled = false;
-    let turnSent = false;
-    let outcomeReported = false;
-    const reportOutcome = (outcome: "complete" | "rejected" | "uncertain") => {
-      if (outcomeReported) return;
-      outcomeReported = true;
-      executionOptions?.onOutcome?.(outcome);
-    };
     const settle = (ok: boolean) => {
       if (settled) return;
       settled = true;
@@ -2914,7 +3041,6 @@ async function sendTurnWebSocket(
         // ignore
       }
       finish();
-      reportOutcome(turnSent ? "uncertain" : "rejected");
       settle(true);
     };
     controller.signal.addEventListener("abort", onAbort, { once: true });
@@ -2930,6 +3056,7 @@ async function sendTurnWebSocket(
           {
             role: "user",
             content: messageContent,
+            ...(clientMessageId ? { id: clientMessageId } : {}),
           },
         ],
       };
@@ -2952,14 +3079,7 @@ async function sendTurnWebSocket(
       if (reasoningEffort) payload.reasoning_effort = reasoningEffort;
       if (conversationMode) payload.conversation_mode = conversationMode;
       if (hitlPolicy) payload.hitl_policy = hitlPolicy;
-      if (executionOptions?.pluginContext) {
-        payload.plugin_context = executionOptions.pluginContext;
-      }
-      if (executionOptions?.delivery) {
-        payload.delivery = executionOptions.delivery;
-      }
       ws.send(JSON.stringify(payload));
-      turnSent = true;
     };
 
     ws.onmessage = (event) => {
@@ -2967,23 +3087,10 @@ async function sendTurnWebSocket(
         const data = JSON.parse(String(event.data)) as HarnessChunk;
         if (!data || typeof data !== "object") return;
         if (!frameBelongsToThread(data, live.threadId)) return;
-        if ((data as { type?: string }).type === "turn_status") return;
-        if (
-          String((data as { type?: unknown }).type || "") === "steer.ack" &&
-          String((data as { status?: unknown }).status || "") === "rejected" &&
-          executionOptions?.delivery === "follow_up" &&
-          !String(
-            (data as { client_pending_id?: unknown }).client_pending_id || "",
-          ).trim()
-        ) {
-          reportOutcome("rejected");
-          controller.signal.removeEventListener("abort", onAbort);
-          live.intentionalClose = true;
-          finish();
-          closeLiveSocket(sessionId, { intentional: true });
-          settle(true);
+        if (applyThreadTitleFrame(data as unknown as Record<string, unknown>)) {
           return;
         }
+        if ((data as { type?: string }).type === "turn_status") return;
         if (
           applySteerProtocolFrame(
             state,
@@ -2999,7 +3106,6 @@ async function sendTurnWebSocket(
               state.activeTurnId,
             )
           ) {
-            reportOutcome(data.type === "error" ? "uncertain" : "complete");
             if (hitlKeepsSocket(data)) {
               parkLiveSocketForHitl(data, state, sessionId, live);
             } else {
@@ -3024,7 +3130,6 @@ async function sendTurnWebSocket(
             state.activeTurnId,
           )
         ) {
-          reportOutcome(data.type === "error" ? "uncertain" : "complete");
           if (hitlKeepsSocket(data)) {
             parkLiveSocketForHitl(data, state, sessionId, live);
           } else {
@@ -3060,7 +3165,6 @@ async function sendTurnWebSocket(
       if (!openedForTurn && !userCancelled) {
         if (!settled) {
           finish();
-          reportOutcome("rejected");
           settle(true);
         }
         return;
@@ -3077,10 +3181,7 @@ async function sendTurnWebSocket(
         // Keep isStreaming + partial assistant bubble; re-subscribe for later chunks.
         // Do NOT finish() — that seals incomplete content and blocks free-scroll UX.
         touchStreamActivity(sessionId);
-        if (!settled) {
-          reportOutcome(turnSent ? "uncertain" : "rejected");
-          settle(true);
-        }
+        if (!settled) settle(true);
         setTimeout(() => {
           void attachThread(
             sessionId,
@@ -3106,10 +3207,7 @@ async function sendTurnWebSocket(
           opts: { afterUnexpectedDrop: true },
         });
         clearStreamWatchdog(sessionId);
-        if (!settled) {
-          reportOutcome(turnSent ? "uncertain" : "rejected");
-          settle(true);
-        }
+        if (!settled) settle(true);
         return;
       }
 
@@ -3117,7 +3215,6 @@ async function sendTurnWebSocket(
       // keep sticky isStreaming so rebind continues receiving chunks.
       if (wasIntentional && !userCancelled && state.isStreaming && !settled) {
         if (isLiveSocketOpen(sessionId)) {
-          reportOutcome(turnSent ? "uncertain" : "rejected");
           settle(true);
           return;
         }
@@ -3125,7 +3222,6 @@ async function sendTurnWebSocket(
 
       if (!settled) {
         finish();
-        reportOutcome(turnSent ? "uncertain" : "rejected");
         settle(true);
       }
 
@@ -3161,7 +3257,7 @@ export async function sendTurn(
   reasoningEffort?: string | null,
   conversationMode?: "ask" | "plan" | "craft" | null,
   hitlPolicy?: { mode: string; tools?: string[] } | null,
-  executionOptions?: TurnExecutionOptions,
+  clientMessageId?: string | null,
 ): Promise<void> {
   const state = getOrCreate(sessionId);
   rememberRoomAgent(state, agentId);
@@ -3174,7 +3270,6 @@ export async function sendTurn(
     clearStreamingFlags(state);
     notify(state);
     onStreamEnd?.();
-    executionOptions?.onOutcome?.("rejected");
     return;
   }
 
@@ -3184,14 +3279,6 @@ export async function sendTurn(
     clearStreamActivity(sessionId);
     notify(state);
     onStreamEnd?.();
-    executionOptions?.onOutcome?.("rejected");
-    return;
-  }
-
-  // A follow_up represents an independent next turn. Never implement it by
-  // aborting the socket that owns the currently running turn.
-  if (executionOptions?.delivery === "follow_up" && state.isStreaming) {
-    executionOptions.onOutcome?.("rejected");
     return;
   }
 
@@ -3208,6 +3295,23 @@ export async function sendTurn(
   state.streamMsg = "";
   state.streamId = "";
   state.streamBlockType = "";
+  const trimmed = text.trim();
+  const userTurns = state.messages.filter(
+    (message) => message.role === "user",
+  ).length;
+  if (userTurns === 1 && trimmed && !trimmed.startsWith("/")) {
+    const title = clipThreadTitle(trimmed);
+    if (title) {
+      emitSessionEvent({
+        kind: "sessionRenamed",
+        sessionId,
+        agentId,
+        title,
+        provisional: true,
+      });
+      settleGeneratedTitle(agentId, sessionId);
+    }
+  }
   beginStream(state, sessionId);
   state.runUsage = null;
   usageSamplesByState.delete(state);
@@ -3259,7 +3363,7 @@ export async function sendTurn(
     reasoningEffort,
     conversationMode,
     hitlPolicy,
-    executionOptions,
+    clientMessageId,
   );
   if (!wsOk) {
     state.messages = [
