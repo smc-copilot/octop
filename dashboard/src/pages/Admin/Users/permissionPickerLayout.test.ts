@@ -3,6 +3,7 @@ import { buildPermissionPickerGroups } from "./permissionPickerLayout";
 
 const CATALOG = [
   "experts",
+  "expert_market",
   "tasks",
   "token_usage",
   "skills",
@@ -97,8 +98,18 @@ describe("buildPermissionPickerGroups", () => {
         blocks: [
           {
             kind: "chips",
-            keys: ["chat", "experts", "tasks", "token_usage"],
+            keys: ["chat"],
             fixed: ["chat"],
+          },
+          {
+            kind: "page",
+            id: "experts",
+            title: "nav.experts",
+            keys: ["experts", "expert_market"],
+          },
+          {
+            kind: "chips",
+            keys: ["tasks", "token_usage"],
           },
         ],
       },
@@ -261,8 +272,18 @@ describe("buildPermissionPickerGroups", () => {
     expect(groups[0]?.blocks).toEqual([
       {
         kind: "chips",
-        keys: ["chat", "experts", "tasks", "token_usage"],
+        keys: ["chat"],
         fixed: ["chat"],
+      },
+      {
+        kind: "page",
+        id: "experts",
+        title: "nav.experts",
+        keys: ["experts", "expert_market"],
+      },
+      {
+        kind: "chips",
+        keys: ["tasks", "token_usage"],
       },
     ]);
     expect(groups[1]?.blocks).toEqual([{ kind: "chips", keys: ["channels"] }]);

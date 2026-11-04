@@ -107,6 +107,7 @@ on each start. Schema (`OctopConfig` in `octop/config.py`):
   "enable_api_docs": false,
   "require_setup_password": true,
   "max_upload_mb": 100,
+  "market_mode": "public",
   "database": {
     "driver": "sqlite",
     "sqlite_path": "octop.db",
@@ -137,6 +138,9 @@ Notes:
   scheduling, and harness. Legacy `cron_timezone` in `config.json` and
   `OCTOP_CRON_TIMEZONE` are still accepted; the new key/env wins when both
   are set.
+- `market_mode` gates SkillHub skill / expert market APIs
+  (`off` | `public` | `allowlist` | `mirror_only`; default `public`).
+  Env override: `OCTOP_MARKET_MODE`. See [Market governance](market-governance.md).
 - `database.password`: when the wizard configures PostgreSQL via discrete
   fields, this **may** be written into `config.json` (convenient for local
   first-run). In production, prefer using only `OCTOP_DATABASE_PASSWORD` or
@@ -184,6 +188,7 @@ Each variable, when set, takes precedence over the matching key in
 | `OCTOP_CAPTCHA_CAM_SECRET_KEY` | string | empty | Tencent only: CAM API SecretKey; never logged; `GET /api/envs` redacts it |
 | `OCTOP_CAPTCHA_V3_MIN_SCORE` | float | `0.5` | Minimum `recaptcha-v3` score; admin UI is read-only |
 | `OCTOP_DEFAULT_TIMEZONE` | IANA tz | `Asia/Shanghai` | Default timezone for display, scheduling, and harness (`cron_timezone` / `OCTOP_CRON_TIMEZONE` still accepted) |
+| `OCTOP_MARKET_MODE` | `off` \| `public` \| `allowlist` \| `mirror_only` | `public` | SkillHub / expert market catalog mode (see [Market governance](market-governance.md)) |
 | `OCTOP_CORS_ORIGINS` | comma-sep list | empty | Permitted CORS origins for the dashboard / external callers |
 | `OCTOP_ENABLE_DASHBOARD` | bool | `true` | Serve the built React SPA at `/` |
 | `OCTOP_ENABLE_API_DOCS` | bool | `false` | Expose Scalar API docs at `/api/docs` |

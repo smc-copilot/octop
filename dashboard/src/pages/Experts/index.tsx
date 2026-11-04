@@ -70,7 +70,7 @@ import {
 } from "../../utils/resourceAudience";
 import { ResourceAudienceFilter } from "../../components/ResourceAudienceFilter";
 import { apiErrorMessage } from "../../utils/apiError";
-import { navAllowed } from "../../utils/permissions";
+import { navAllowed, userCan } from "../../utils/permissions";
 import styles from "./index.module.less";
 
 type TabKey = "my" | "teams" | "library" | "market";
@@ -143,6 +143,7 @@ export default function ExpertsPage() {
   const { agents, refresh: refreshAgents } = useAgent();
   const currentUser = useCurrentUser();
   const canAddCloudExpert = navAllowed(currentUser, "bridge");
+  const canExpertMarket = userCan(currentUser, "expert_market");
   const openCloudCollab = useCallback(() => {
     navigate("/bridge?create=1");
   }, [navigate]);
@@ -158,13 +159,11 @@ export default function ExpertsPage() {
   const [searchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState<TabKey>(() => {
     const tab = searchParams.get("tab");
-    if (
-      tab === "my" ||
-      tab === "teams" ||
-      tab === "library" ||
-      tab === "market"
-    ) {
+    if (tab === "my" || tab === "teams" || tab === "library") {
       return tab;
+    }
+    if (tab === "market" && userCan(currentUser, "expert_market")) {
+      return "market";
     }
     return "my";
   });
@@ -969,7 +968,9 @@ export default function ExpertsPage() {
       subtitle={t("pageShell.experts.subtitle")}
     >
       <Tabs
-        activeKey={activeTab}
+        activeKey={
+          activeTab === "market" && !canExpertMarket ? "my" : activeTab
+        }
         onChange={(k) => setActiveTab(k as TabKey)}
         items={[
           {
@@ -991,13 +992,19 @@ export default function ExpertsPage() {
             ),
             children: libraryContent,
           },
-          {
-            key: "market",
-            label: (
-              <TabLabel icon={Store}>{t("experts.expertMarket")}</TabLabel>
-            ),
-            children: marketContent,
-          },
+          ...(canExpertMarket
+            ? [
+                {
+                  key: "market" as const,
+                  label: (
+                    <TabLabel icon={Store}>
+                      {t("experts.expertMarket")}
+                    </TabLabel>
+                  ),
+                  children: marketContent,
+                },
+              ]
+            : []),
         ]}
       />
 

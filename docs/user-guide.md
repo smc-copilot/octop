@@ -367,12 +367,12 @@ Octop 支持两个方向的 ACP 集成：
 
 ### 5.8 设置（用户 / 安全 / TLS / 系统）
 
-- **用户**：管理账号、角色、修改密码。
-- **安全**：工具审批、Shell 命令护栏（`~/.octop/security/tool_guard/`）。
+- **用户**：管理账号、角色、权限与用户组。非管理员默认拥有 `skill_market` / `expert_market`（技能市场、专家市场）；管理员可在角色权限中关闭。
+- **安全**：工具审批、Shell 命令护栏（`~/.octop/security/tool_guard/`）；**市场策略**页可查看 `market_mode` 并增删 slug 白名单规则（allowlist 模式）。
 - **TLS**：配置 HTTPS（自签或 Let's Encrypt）。
 - **系统**：监听地址 / 端口、日志级别、定时任务时区等。
 
-> 手动编辑配置文件：运行时参数保存在 `~/.octop/config.json`，可用环境变量覆盖（如 `OCTOP_PORT`、`OCTOP_BIND_HOST`）。详见 [docs/configuration.md](configuration.md)。
+> 手动编辑配置文件：运行时参数保存在 `~/.octop/config.json`，可用环境变量覆盖（如 `OCTOP_PORT`、`OCTOP_BIND_HOST`、`OCTOP_MARKET_MODE`）。市场模式与白名单详见 [docs/market-governance.md](market-governance.md) 与 [docs/configuration.md](configuration.md)。
 
 ![图 5.6 — 设置页面](assets/use-06-settings.png)
 

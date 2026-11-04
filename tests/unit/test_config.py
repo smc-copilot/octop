@@ -34,6 +34,7 @@ def test_defaults_when_missing(tmp_path: Path):
     assert cfg.backup.include_chats is False
     assert cfg.max_upload_mb == 100
     assert cfg.max_upload_bytes == 100 * 1024 * 1024
+    assert cfg.market_mode == "public"
     assert cfg_path.exists()  # file written with defaults
     written = json.loads(cfg_path.read_text(encoding="utf-8"))
     assert "password" not in written.get("database", {})

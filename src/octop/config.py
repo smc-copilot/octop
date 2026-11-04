@@ -18,6 +18,8 @@ MAX_MAX_UPLOAD_MB = 1024
 DEFAULT_BROWSER_IDLE_TIMEOUT_MINUTES = 30
 
 _VALID_DRIVERS = frozenset({"sqlite", "postgresql"})
+VALID_MARKET_MODES = frozenset({"off", "public", "allowlist", "mirror_only"})
+DEFAULT_MARKET_MODE = "public"
 
 _DATABASE_ENV_KEYS = (
     "OCTOP_DATABASE_URL",
@@ -144,6 +146,8 @@ class OctopConfig:
     capabilities: CapabilitiesConfig = field(default_factory=CapabilitiesConfig)
     max_upload_mb: int = DEFAULT_MAX_UPLOAD_MB
     browser_idle_timeout_minutes: int = DEFAULT_BROWSER_IDLE_TIMEOUT_MINUTES
+    # Skill / skillset market governance: off | public | allowlist | mirror_only.
+    market_mode: str = DEFAULT_MARKET_MODE
 
     @property
     def max_upload_bytes(self) -> int:
@@ -240,6 +244,23 @@ def _parse_backup_section(raw: object) -> BackupConfig:
 
 def upload_mb_to_bytes(mb: int) -> int:
     return int(mb) * 1024 * 1024
+
+
+def parse_market_mode(raw: object, *, default: str = DEFAULT_MARKET_MODE) -> str:
+    """Coerce config/env market_mode to a known value."""
+    if raw is None:
+        return default
+    text = str(raw).strip().lower()
+    if not text:
+        return default
+    if text not in VALID_MARKET_MODES:
+        logger.warning(
+            "market_mode %r is invalid; using %s",
+            text,
+            default,
+        )
+        return default
+    return text
 
 
 def parse_max_upload_mb(raw: object, *, default: int = DEFAULT_MAX_UPLOAD_MB) -> int:
@@ -597,6 +618,14 @@ def load_config(path: Path) -> OctopConfig:
             include_chats=_coerce_bool("OCTOP_BACKUP_INCLUDE_CHATS", v, backup.include_chats),
         )
 
+    if v := os.environ.get("OCTOP_MARKET_MODE"):
+        market_mode = parse_market_mode(v, default=DEFAULT_MARKET_MODE)
+    else:
+        market_mode = parse_market_mode(
+            merged.get("market_mode", DEFAULT_MARKET_MODE),
+            default=DEFAULT_MARKET_MODE,
+        )
+
     return OctopConfig(
         bind_host=merged["bind_host"],
         port=int(merged["port"]),
@@ -631,4 +660,5 @@ def load_config(path: Path) -> OctopConfig:
                 )
             ),
         ),
+        market_mode=market_mode,
     )

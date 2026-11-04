@@ -21,6 +21,7 @@ from octop.infra.db.repos.connectors import ConnectorRepo
 from octop.infra.db.repos.cron import CronJobRepo
 from octop.infra.db.repos.invites import InviteRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
+from octop.infra.db.repos.market_policy import MarketPolicyRepo
 from octop.infra.db.repos.plugin_credentials import PluginCredentialRepo
 from octop.infra.db.repos.plugin_records import PluginRecordRepo
 from octop.infra.db.repos.plugin_retained_records import PluginRetainedRecordRepo
@@ -80,6 +81,7 @@ class RepoBundle:
     user_group_repo: UserGroupRepo
     user_group_member_repo: UserGroupMemberRepo
     resource_group_grant_repo: ResourceGroupGrantRepo
+    market_policy_repo: MarketPolicyRepo
 
     @classmethod
     def from_pool(cls, db: DatabasePool) -> RepoBundle:
@@ -117,6 +119,7 @@ class RepoBundle:
             user_group_repo=UserGroupRepo(db),
             user_group_member_repo=UserGroupMemberRepo(db),
             resource_group_grant_repo=ResourceGroupGrantRepo(db),
+            market_policy_repo=MarketPolicyRepo(db),
         )
 
 
@@ -242,6 +245,10 @@ class SharedServices:
     @property
     def plugin_credential_repo(self) -> PluginCredentialRepo:
         return self.repos.plugin_credential_repo
+
+    @property
+    def market_policy_repo(self) -> MarketPolicyRepo:
+        return self.repos.market_policy_repo
 
 
 def build_shared_services(

@@ -1,0 +1,20 @@
+-- Schema v26: market skill/skillset allow-deny rules (default-closed under allowlist).
+
+CREATE TABLE IF NOT EXISTS market_policy_rules (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  rule_id         TEXT NOT NULL UNIQUE,
+  resource_type   TEXT NOT NULL CHECK (resource_type IN ('skill', 'skillset')),
+  slug            TEXT NOT NULL,
+  effect          TEXT NOT NULL CHECK (effect IN ('allow', 'deny')),
+  user_group_id   TEXT REFERENCES user_group(user_group_id) ON DELETE CASCADE,
+  priority        INTEGER NOT NULL DEFAULT 0,
+  created_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_policy_rules_lookup
+  ON market_policy_rules(resource_type, slug);
+CREATE INDEX IF NOT EXISTS idx_market_policy_rules_group
+  ON market_policy_rules(user_group_id);
+
+UPDATE _schema_version SET version = 26;
