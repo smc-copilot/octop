@@ -1,4 +1,4 @@
--- Schema v25: generic plugin records and encrypted credentials.
+-- Schema v26: generic plugin records and encrypted credentials.
 
 CREATE TABLE IF NOT EXISTS plugin_records (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,4 +26,4 @@ CREATE TABLE IF NOT EXISTS plugin_credentials (
   updated_at INTEGER NOT NULL
 );
 
-UPDATE _schema_version SET version = 25;
+UPDATE _schema_version SET version = 26;

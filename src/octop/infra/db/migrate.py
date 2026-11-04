@@ -2429,7 +2429,7 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_knowledge_base_icon_url_schema(db)
     _ensure_bridge_icon_url_schema(db)
     _ensure_bridge_shared_schema(db)
-    # Always repair: version may already be 25 while MFA tables were never created.
+    # Always repair: version may already be >=25 while MFA tables were never created.
     _ensure_user_mfa_schema(db)
     _grant_default_nav_permissions(db)
     _grant_personalization_tab_permissions(db)

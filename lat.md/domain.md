@@ -42,13 +42,7 @@ Jobs store `session_key` (often the owner's dashboard key). Cron is loaded at bo
 
 Skill packages are DB-tracked packages plus workspace skill trees. Agents reference `skill_package_ids`; SkillHub is the market client under `infra/skills/`.
 
-Builtin and expert library skills ship in-repo; enablement is per-agent. Do not confuse skill package rows with connector MCP tools. Public SkillHub browse/install is governed by [[domain#Market governance]].
-
-## Market governance
-
-Instance `market_mode` plus `skill_market`/`expert_market` permissions and `market_policy_rules` control SkillHub hubs via [[src/octop/infra/market/policy.py#MarketCatalogPolicy]].
-
-Modes: `off` | `public` | `allowlist` | `mirror_only`. Allowlist is default-closed and group-aware; `mirror_only` serves local `published_experts` / skill packages. See `docs/market-governance.md`.
+Builtin and expert library skills ship in-repo; enablement is per-agent. Do not confuse skill package rows with connector MCP tools.
 
 ## Connectors
 
@@ -74,4 +68,4 @@ Streaming turns use history trackers alongside [[message-flow#Stream projection]
 
 [[src/octop/infra/db/services.py#SharedServices]] is the DI container: [[src/octop/config.py#OctopConfig]], path layout, and [[src/octop/infra/db/services.py#RepoBundle]].
 
-[[src/octop/infra/db/services.py#RepoBundle#from_pool]] builds one repo per table. Routers and managers use `server.services.*_repo` — do not import repos at module level outside SharedServices / RepoBundle. Factory: [[src/octop/infra/db/services.py#build_shared_services]].
+[[src/octop/infra/db/services.py#RepoBundle#from_pool]] builds one repo per table, including plugin host storage (`plugin_record_repo`, `plugin_credential_repo`, `plugin_retained_record_repo`). Routers and managers use `server.services.*_repo` — do not import repos at module level outside SharedServices / RepoBundle. Factory: [[src/octop/infra/db/services.py#build_shared_services]].

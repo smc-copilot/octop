@@ -24,7 +24,6 @@ Cross-linked anchors for agents and contributors. Prefer these over re-deriving 
 | Agents, threads, gateway | [[domain#Agent]], [[domain#Thread]], [[domain#Gateway]] |
 | Workspace I/O | [[domain#Workspace]] |
 | Cron, skills, connectors | [[domain#Cron]], [[domain#Skills]], [[domain#Connectors]] |
-| Market governance | [[domain#Market governance]], [[tests#Market catalog policy]] |
 | Users, history, DI | [[domain#Users and auth]], [[domain#History]], [[domain#SharedServices]] |
 | Design decisions | [[decisions]] |
 | Ingress → harness turn | [[message-flow]] |
