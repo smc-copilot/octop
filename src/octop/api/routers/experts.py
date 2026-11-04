@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from octop.api.common.agent import apply_agent_audience, require_agent_owner_row, user_owns_agent
 from octop.api.common.agent_runtime import AgentRuntimeFields, runtime_field_updates
 from octop.api.common.validators import assert_user_backend_root_dirs
-from octop.api.deps import current_user, get_server, require_permission
+from octop.api.deps import current_user, get_server
 from octop.infra.agents.experts.avatar import (
     display_published_expert_icon_url,
     public_portrait_icon_url,
@@ -74,8 +74,6 @@ from octop.infra.agents.experts.skillhub_market import (
 )
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.history.trajectory.settings import apply_enable_trajectory
-from octop.infra.market.mirror import published_experts_as_hub_items
-from octop.infra.market.policy import market_policy_from_server
 from octop.infra.utils.locale import resolve_user_locale
 
 router = APIRouter()
@@ -307,7 +305,6 @@ class ExpertHubItemResponse(BaseModel):
     skill_slugs: list[str] = Field(default_factory=list)
     skill_count: int = 0
     source: str = "skillhub"
-    published_expert_id: str | None = None
     content: LocalizedTextResponse | None = None
     quick_prompts: list[QuickPromptResponse] | None = None
     task_examples: dict[str, list[str]] | None = None
@@ -316,14 +313,13 @@ class ExpertHubItemResponse(BaseModel):
 class ExpertHubListResponse(BaseModel):
     items: list[ExpertHubItemResponse]
     scenes: list[str] = Field(default_factory=list)
-    market_mode: str | None = None
 
 
 class MarketCreateSourceResponse(BaseModel):
     source: str
     kind: str
     slug: str
-    welcome_enrichment: str | None = None
+    welcome_enrichment: str
 
 
 class MarketCreateResponse(BaseModel):
@@ -342,7 +338,6 @@ class MarketCreateResponse(BaseModel):
     bootstrap_pending: bool
     hub_skill_errors: list[str] = Field(default_factory=list)
     copy_skill_errors: list[str] = Field(default_factory=list)
-    published_expert_id: str | None = None
 
 
 def _quick_prompt_dict(p: Any) -> dict[str, Any]:
@@ -731,47 +726,16 @@ async def list_experts(
 async def list_expert_hub(
     q: str = "",
     scene: str = "",
-    user: Any = Depends(require_permission("expert_market")),
-    server: Any = Depends(get_server),
+    _: Any = Depends(current_user),
 ) -> dict[str, Any]:
     """List SkillHub skillsets as market expert cards, optionally filtered by scene."""
-    policy = market_policy_from_server(server)
-    policy.assert_market_enabled()
-    if policy.mode == "mirror_only":
-        rows = server.services.published_expert_repo.list_all()
-        mirror_items, mirror_scenes = published_experts_as_hub_items(rows, query=q)
-        policy.record(
-            actor=user.username,
-            action="market.search",
-            target="skillset",
-            payload=f"mirror_only q={q!r} n={len(mirror_items)}",
-        )
-        return {
-            "items": mirror_items,
-            "scenes": mirror_scenes,
-            "market_mode": policy.mode,
-        }
-    policy.assert_remote_catalog_allowed()
     try:
-        remote_items, scenes = await asyncio.to_thread(browse_skillsets, q, scene=scene)
+        items, scenes = await asyncio.to_thread(browse_skillsets, q, scene=scene)
     except SkillHubMarketError as exc:
         raise _map_skillhub_error(exc) from exc
-    filtered = policy.filter_skillset_items(
-        user.id,
-        remote_items,
-        slug_of=lambda item: item.slug,
-        is_admin=bool(getattr(user, "is_admin", False)),
-    )
-    policy.record(
-        actor=user.username,
-        action="market.search",
-        target="skillset",
-        payload=f"q={q!r} scene={scene!r} n={len(filtered)}",
-    )
     return {
-        "items": [item.api_dict(include_content=False) for item in filtered],
+        "items": [item.api_dict(include_content=False) for item in items],
         "scenes": scenes,
-        "market_mode": policy.mode,
     }
 
 
@@ -782,26 +746,9 @@ async def list_expert_hub(
 )
 async def get_expert_hub_item(
     slug: str,
-    user: Any = Depends(require_permission("expert_market")),
-    server: Any = Depends(get_server),
+    _: Any = Depends(current_user),
 ) -> dict[str, Any]:
     """SkillHub market detail, including workflow prompt and default quick prompts."""
-    policy = market_policy_from_server(server)
-    policy.assert_market_enabled()
-    if policy.mode == "mirror_only":
-        row = server.services.published_expert_repo.get_by_slug(slug)
-        if row is None:
-            row = server.services.published_expert_repo.get(slug)
-        if row is None:
-            raise OctopError(ErrorCode.NOT_FOUND, f"published expert {slug!r} not found")
-        items, _scenes = published_experts_as_hub_items([row])
-        return items[0]
-    policy.assert_remote_catalog_allowed()
-    policy.assert_install_skillset(
-        user.id,
-        slug,
-        is_admin=bool(getattr(user, "is_admin", False)),
-    )
     try:
         item = await asyncio.to_thread(fetch_skillset, slug)
     except SkillHubMarketError as exc:
@@ -818,96 +765,15 @@ async def get_expert_hub_item(
 async def install_expert_hub_item(
     slug: str,
     body: FromExpertBody,
-    user: Any = Depends(require_permission("expert_market")),
+    user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Create an agent from a SkillHub skillset-backed expert template."""
-    policy = market_policy_from_server(server)
-    policy.assert_market_enabled()
-    if policy.mode == "mirror_only":
-        row = server.services.published_expert_repo.get_by_slug(slug)
-        if row is None:
-            row = server.services.published_expert_repo.get(slug)
-        if row is None:
-            raise OctopError(
-                ErrorCode.NOT_FOUND,
-                f"published expert {slug!r} not found",
-            )
-        assert server.app_runtime is not None
-        assert server.services is not None
-        assert_user_backend_root_dirs(
-            user,
-            body.backend,
-            policy_repo=server.services.user_policy_repo,
-        )
-        kb_ids, servers = _validated_session_defaults(
-            server.app_runtime.agent_registry,
-            user.id,
-            knowledge_base_ids=body.knowledge_base_ids,
-            mcp_servers=body.mcp_servers,
-        )
-        patch, copies, report = _composer_apply(body, user=user, server=server)
-        install_name = (body.name or "").strip() or str(row.name).strip() or slug
-        install_description = body.description if isinstance(body.description, str) else ""
-        published = await install_published_expert_agent(
-            services=server.services,
-            registry=server.app_runtime.agent_registry,
-            user=user,
-            expert_id=row.id,
-            options=PublishedExpertInstallOptions(
-                name=install_name,
-                description=install_description,
-                providers=body.providers,
-                default_model=body.default_model,
-                backend=body.backend,
-                color=body.color,
-                agent_id=body.agent_id,
-                welcome_message=body.welcome_message,
-                skill_package_ids=body.skill_package_ids,
-                knowledge_base_ids=kb_ids,
-                mcp_servers=servers,
-                runtime_config=runtime_field_updates(body, exclude_unset=True),
-                enable_trajectory=body.enable_trajectory,
-                conversation_mode=body.conversation_mode,
-                workspace_patch=patch,
-                composer_copies=copies,
-                composer_report=report,
-                quick_prompts=_quick_prompts_from_body(body),
-            ),
-        )
-        policy.record(
-            actor=user.username,
-            action="market.install_skillset",
-            target=slug,
-            payload="mirror_only published",
-        )
-        return {
-            **published,
-            "expert_id": row.id,
-            "market": {
-                "source": "published",
-                "kind": "published_expert",
-                "slug": slug,
-            },
-            **report.as_api_fields(),
-        }
     assert server.app_runtime is not None
     assert_user_backend_root_dirs(
         user,
         body.backend,
         policy_repo=server.services.user_policy_repo,
-    )
-    child_slugs: list[str] = []
-    try:
-        preview = await asyncio.to_thread(fetch_skillset, slug)
-        child_slugs = list(preview.skill_slugs)
-    except SkillHubMarketError:
-        child_slugs = []
-    policy.assert_install_skillset(
-        user.id,
-        slug,
-        child_skill_slugs=child_slugs,
-        is_admin=bool(getattr(user, "is_admin", False)),
     )
     package_ids = (
         server.app_runtime.agent_registry.validate_skill_package_ids(body.skill_package_ids)
@@ -928,7 +794,7 @@ async def install_expert_hub_item(
 
         GroupAccess(server.services.repos).validate_visibility(body.visibility, body.group_ids)
     try:
-        created = await create_skillhub_market_agent(
+        result = await create_skillhub_market_agent(
             server=server,
             user=user,
             slug=slug,
@@ -956,7 +822,7 @@ async def install_expert_hub_item(
     except SkillHubMarketError as exc:
         raise _map_skillhub_error(exc) from exc
 
-    row = created.row
+    row = result.row
     if body.visibility is not None:
         await apply_agent_audience(
             server,
@@ -966,12 +832,6 @@ async def install_expert_hub_item(
             shared=None,
         )
         row = server.app_runtime.agent_registry.get_row(row.agent_id) or row
-    policy.record(
-        actor=user.username,
-        action="market.install_skillset",
-        target=created.slug,
-        payload="skillhub",
-    )
     return {
         "id": row.id,
         "agent_id": row.agent_id,
@@ -980,15 +840,15 @@ async def install_expert_hub_item(
         "description": row.description,
         "default_model": row.default_model,
         "state": row.last_state or "unknown",
-        "expert_id": created.expert_id,
-        "icon_name": created.icon_name,
+        "expert_id": result.expert_id,
+        "icon_name": result.icon_name,
         "icon_url": getattr(row, "icon_url", None),
-        "color": created.color,
+        "color": result.color,
         "market": {
             "source": "skillhub",
             "kind": "skillset",
-            "slug": created.slug,
-            "welcome_enrichment": created.welcome_enrichment,
+            "slug": result.slug,
+            "welcome_enrichment": result.welcome_enrichment,
         },
         "bootstrap_pending": not server.app_runtime.agent_registry.is_bootstrapped(row.agent_id),
         **report.as_api_fields(),

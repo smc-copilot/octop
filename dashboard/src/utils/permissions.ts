@@ -68,8 +68,7 @@ export const PERM = {
     "admin_console",
   ],
   advancedPage: ["update", "envs", "tls", "observability", "backup", "captcha"],
-  experts: ["experts", "expert_market"],
-  expertMarket: ["expert_market"],
+  experts: ["experts"],
   tasks: ["tasks"],
   tokenUsage: ["token_usage"],
 } as const satisfies Record<string, readonly string[]>;
@@ -146,7 +145,6 @@ export const SECURITY_TAB_PERMISSIONS = {
   pii: "security_pii",
   tool_guard: "security_tool_guard",
   skill_scan: "security_skill_scan",
-  market: "admin_console",
   audit: "admin_console",
 } as const;
 

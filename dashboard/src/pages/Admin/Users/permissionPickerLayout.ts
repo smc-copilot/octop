@@ -15,11 +15,7 @@ const NAV_PERMISSION_CHIPS: readonly {
   inline?: boolean;
 }[] = [
   { key: "chat", labelKey: "nav.chat", permissions: [] },
-  {
-    key: "experts",
-    labelKey: "nav.experts",
-    permissions: ["experts", "expert_market"],
-  },
+  { key: "experts", labelKey: "nav.experts", permissions: ["experts"] },
   { key: "tasks", labelKey: "nav.tasks", permissions: ["tasks"] },
   {
     key: "token-usage",

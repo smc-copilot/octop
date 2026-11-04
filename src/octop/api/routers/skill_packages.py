@@ -17,13 +17,9 @@ from octop.api.deps import get_server, require_permission
 from octop.infra.agents.experts.skillhub_market import (
     SkillHubMarketError,
     SkillHubMarketErrorKind,
-    fetch_skillset,
-    skill_slugs_for_skillset,
 )
 from octop.infra.db.repos.skill_packages import SkillPackageRow
 from octop.infra.errors import ErrorCode, OctopError
-from octop.infra.market.mirror import skill_packages_as_hub_skills
-from octop.infra.market.policy import market_policy_from_server
 from octop.infra.server import OctopServer
 from octop.infra.skills.install import valid_skillhub_icon_url
 from octop.infra.skills.skill_archive import build_skills_zip
@@ -397,86 +393,11 @@ async def list_skill_packages(
     ]
 
 
-def _filter_package_hub_rows(
-    policy: Any,
-    user: User,
-    rows: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    allowed = set(
-        policy.filter_skill_slugs(
-            user.id,
-            [str(row.get("slug") or "") for row in rows],
-            is_admin=bool(user.is_admin),
-        )
-    )
-    return [row for row in rows if str(row.get("slug") or "").strip() in allowed]
-
-
-def _filter_package_hub_rankings(
-    policy: Any,
-    user: User,
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    rankings = payload.get("rankings")
-    if isinstance(rankings, dict):
-        filtered: dict[str, Any] = {}
-        for name, section in rankings.items():
-            if not isinstance(section, dict):
-                filtered[name] = section
-                continue
-            skills = section.get("skills")
-            if not isinstance(skills, list):
-                filtered[name] = section
-                continue
-            kept = _filter_package_hub_rows(
-                policy,
-                user,
-                [row for row in skills if isinstance(row, dict)],
-            )
-            filtered[name] = {**section, "skills": kept, "total": len(kept)}
-        return {**payload, "rankings": filtered}
-    skills = payload.get("skills")
-    if isinstance(skills, list):
-        kept = _filter_package_hub_rows(
-            policy,
-            user,
-            [row for row in skills if isinstance(row, dict)],
-        )
-        return {**payload, "skills": kept, "total": len(kept)}
-    return payload
-
-
-def _mirror_package_hub_search(
-    server: OctopServer,
-    user: User,
-    *,
-    q: str,
-    limit: int,
-) -> list[dict[str, Any]]:
-    store = _store(server)
-    access = _package_access(server)
-    rows = access.filter_rows(
-        _visible_packages(store, user),
-        user_id=user.id,
-        is_admin=user.is_admin,
-        resource_type=RESOURCE_SKILL_PACKAGE,
-        key_of=lambda row: row.id,
-        is_owner=lambda row: _package_owner(user, row),
-    )
-    items = skill_packages_as_hub_skills(
-        rows,
-        query=q,
-        list_skill_summaries=store.list_skill_summaries,
-    )
-    return items[: max(1, min(limit, 100))]
-
-
 @router.get("/hub/search", summary="Search SkillHub for installing into packages")
 async def package_hub_search(
     q: str = "",
     limit: int = 50,
-    user: User = Depends(require_permission("skill_market")),
-    server: OctopServer = Depends(get_server),
+    _user: User = Depends(require_permission("skill_packages")),
 ) -> list[dict[str, Any]]:
     from fastapi import HTTPException  # noqa: PLC0415
 
@@ -485,39 +406,18 @@ async def package_hub_search(
         search_skillhub,
     )
 
-    policy = market_policy_from_server(server)
-    policy.assert_market_enabled()
-    if policy.mode == "mirror_only":
-        items = _mirror_package_hub_search(server, user, q=q, limit=limit)
-        policy.record(
-            actor=user.username,
-            action="market.search",
-            target="skill",
-            payload=f"mirror_only package_hub q={q!r} n={len(items)}",
-        )
-        return items
-    policy.assert_remote_catalog_allowed()
     query = q.strip() or "a"
     effective_limit = max(1, min(limit, 100))
     try:
-        rows = await search_skillhub(query, limit=effective_limit)
+        return await search_skillhub(query, limit=effective_limit)
     except SkillHubMarketError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    filtered = _filter_package_hub_rows(policy, user, rows)
-    policy.record(
-        actor=user.username,
-        action="market.search",
-        target="skill",
-        payload=f"package_hub q={q!r} n={len(filtered)}",
-    )
-    return filtered
 
 
 @router.get("/hub/rankings", summary="SkillHub rankings for installing into packages")
 async def package_hub_rankings(
     type: str = "all",
-    user: User = Depends(require_permission("skill_market")),
-    server: OctopServer = Depends(get_server),
+    _user: User = Depends(require_permission("skill_packages")),
 ) -> dict[str, Any]:
     from fastapi import HTTPException  # noqa: PLC0415
 
@@ -527,39 +427,14 @@ async def package_hub_rankings(
         fetch_skillhub_rankings,
     )
 
-    policy = market_policy_from_server(server)
-    policy.assert_market_enabled()
-    if policy.mode == "mirror_only":
-        items = _mirror_package_hub_search(server, user, q="", limit=50)
-        policy.record(
-            actor=user.username,
-            action="market.search",
-            target="skill",
-            payload=f"mirror_only package_hub rankings n={len(items)}",
-        )
-        return {
-            "rankings": {
-                "local": {"section": "local", "skills": items, "total": len(items)},
-            },
-            "market_mode": policy.mode,
-        }
-    policy.assert_remote_catalog_allowed()
     ranking_types = {"all", "hot", "featured", "newest", "recommended", "trending", "paid"}
     rtype = type if type in ranking_types else "all"
     try:
-        payload = await fetch_skillhub_rankings(rtype)
+        return await fetch_skillhub_rankings(rtype)
     except SkillHubMarketTimeout as exc:
         raise HTTPException(status_code=504, detail=str(exc)) from exc
     except SkillHubMarketError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    filtered = _filter_package_hub_rankings(policy, user, payload)
-    policy.record(
-        actor=user.username,
-        action="market.search",
-        target="skill",
-        payload=f"package_hub rankings type={rtype!r}",
-    )
-    return {**filtered, "market_mode": policy.mode}
 
 
 @router.post("", summary="Create a global skill package")
@@ -615,29 +490,14 @@ async def create_skill_package(
 async def create_from_skillhub(
     body: FromSkillHubBody,
     server: OctopServer = Depends(get_server),
-    user: User = Depends(require_permission("skill_market")),
+    user: User = Depends(require_permission("skill_packages")),
 ) -> dict[str, Any]:
-    policy = market_policy_from_server(server)
-    policy.assert_market_enabled()
-    slug = _required(body.slug, "slug")
-    child_slugs: list[str] = []
-    try:
-        preview = await asyncio.to_thread(fetch_skillset, slug)
-        child_slugs = list(skill_slugs_for_skillset(preview))
-    except SkillHubMarketError:
-        child_slugs = []
-    policy.assert_install_skillset(
-        user.id,
-        slug,
-        child_skill_slugs=child_slugs,
-        is_admin=bool(user.is_admin),
-    )
     store = _store(server)
     try:
         result = await asyncio.to_thread(
             create_package_from_skillhub,
             store,
-            slug=slug,
+            slug=_required(body.slug, "slug"),
             created_by=str(user.id),
             name=body.name.strip() if body.name is not None else None,
             description=body.description.strip() if body.description is not None else None,
@@ -647,12 +507,6 @@ async def create_from_skillhub(
         )
     except (SkillHubMarketError, SkillHubDownloadError) as exc:
         raise _map_skillhub_error(exc) from exc
-    policy.record(
-        actor=user.username,
-        action="market.mirror_import",
-        target=slug,
-        payload="from-skillhub",
-    )
     payload = _package_payload_with_creator(server, store, result.row)
     if result.skipped_slugs:
         payload["skipped_skills"] = list(result.skipped_slugs)
@@ -1194,7 +1048,7 @@ async def hub_install_package_skill(
     body: HubInstallPackageSkillBody,
     request: Request,
     server: OctopServer = Depends(get_server),
-    user: User = Depends(require_permission("skill_market")),
+    user: User = Depends(require_permission("skill_packages")),
 ) -> dict[str, Any]:
     from fastapi import HTTPException  # noqa: PLC0415
 
@@ -1219,7 +1073,6 @@ async def hub_install_package_skill(
     store = _store(server)
     row = _package_or_404(store, package_id, locale=locale)
     store.assert_can_mutate(row, user)
-    policy = market_policy_from_server(server)
 
     try:
         skill_name = validate_skill_slug(body.skill_name)
@@ -1228,11 +1081,6 @@ async def hub_install_package_skill(
             status_code=400,
             detail="skill_name is required and must not contain path separators or start with .",
         ) from None
-    policy.assert_install_skill(
-        user.id,
-        skill_name,
-        is_admin=bool(getattr(user, "is_admin", False)),
-    )
 
     display_name = (body.display_name or "").strip()
     icon_url = (body.icon_url or "").strip()
@@ -1298,12 +1146,6 @@ async def hub_install_package_skill(
     except SkillPackageError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    policy.record(
-        actor=user.username,
-        action="market.install_skill",
-        target=skill_name,
-        payload=f"package={package_id} transport={transport}",
-    )
     return {
         "installed": True,
         "name": skill_name,

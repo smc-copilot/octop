@@ -56,8 +56,6 @@ from octop.infra.agents.manager import (
     skills_disabled_set as _disabled_set,
 )
 from octop.infra.errors import ErrorCode, OctopError
-from octop.infra.market.mirror import skill_packages_as_hub_skills
-from octop.infra.market.policy import MarketCatalogPolicy, market_policy_from_server
 from octop.infra.skills.presentation import apply_skill_presentation
 from octop.infra.skills.skill_archive import build_skill_zip, build_skills_zip
 from octop.infra.skills.skill_package_store import SkillPackageStore, normalize_copy_policy
@@ -76,7 +74,6 @@ from octop.infra.skills.skill_transfer import (
     copy_workspace_skill_to_workspace,
     read_workspace_skill_files,
 )
-from octop.infra.users.groups import RESOURCE_SKILL_PACKAGE, GroupAccess
 from octop.infra.utils.frontmatter import parse_frontmatter
 from octop.infra.utils.locale import Locale, resolve_request_locale
 
@@ -1384,79 +1381,6 @@ def _parse_skillhub_search_output(text: str) -> list[dict[str, Any]]:
 _RANKING_TYPES = {"all", "hot", "featured", "newest", "recommended", "trending", "paid"}
 
 
-def _filter_hub_skill_rows(
-    policy: MarketCatalogPolicy,
-    user: Any,
-    rows: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    is_admin = bool(getattr(user, "is_admin", False))
-    allowed = set(
-        policy.filter_skill_slugs(
-            user.id,
-            [str(row.get("slug") or "") for row in rows],
-            is_admin=is_admin,
-        )
-    )
-    return [row for row in rows if str(row.get("slug") or "").strip() in allowed]
-
-
-def _filter_hub_rankings(
-    policy: MarketCatalogPolicy,
-    user: Any,
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    rankings = payload.get("rankings")
-    if isinstance(rankings, dict):
-        filtered_rankings: dict[str, Any] = {}
-        for name, section in rankings.items():
-            if not isinstance(section, dict):
-                filtered_rankings[name] = section
-                continue
-            skills = section.get("skills")
-            if not isinstance(skills, list):
-                filtered_rankings[name] = section
-                continue
-            kept = _filter_hub_skill_rows(
-                policy,
-                user,
-                [row for row in skills if isinstance(row, dict)],
-            )
-            filtered_rankings[name] = {**section, "skills": kept, "total": len(kept)}
-        return {**payload, "rankings": filtered_rankings}
-    skills = payload.get("skills")
-    if isinstance(skills, list):
-        kept = _filter_hub_skill_rows(
-            policy,
-            user,
-            [row for row in skills if isinstance(row, dict)],
-        )
-        return {**payload, "skills": kept, "total": len(kept)}
-    return payload
-
-
-def _mirror_skill_search(server: Any, user: Any, *, q: str, limit: int) -> list[dict[str, Any]]:
-    store = SkillPackageStore(
-        repo=server.services.skill_package_repo,
-        root=server.paths.skill_packages_dir,
-    )
-    access = GroupAccess(server.services.repos)
-    visible = store.repo.list_all() if user.is_admin else store.repo.list_visible(user.id)
-    rows = access.filter_rows(
-        visible,
-        user_id=user.id,
-        is_admin=bool(user.is_admin),
-        resource_type=RESOURCE_SKILL_PACKAGE,
-        key_of=lambda row: row.id,
-        is_owner=lambda row: str(user.id) == str(row.created_by),
-    )
-    items = skill_packages_as_hub_skills(
-        rows,
-        query=q,
-        list_skill_summaries=store.list_skill_summaries,
-    )
-    return items[: max(1, min(limit, 100))]
-
-
 async def _hub_search(request: Request, *, q: str, limit: int) -> list[dict[str, Any]]:
     from fastapi import HTTPException  # noqa: PLC0415
 
@@ -1512,92 +1436,24 @@ async def _hub_rankings(ranking_type: str) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-async def _governed_hub_search(
-    request: Request,
-    *,
-    q: str,
-    limit: int,
-    user: Any,
-    server: Any,
-) -> list[dict[str, Any]]:
-    policy = market_policy_from_server(server)
-    policy.assert_market_enabled()
-    if policy.mode == "mirror_only":
-        items = _mirror_skill_search(server, user, q=q, limit=limit)
-        policy.record(
-            actor=user.username,
-            action="market.search",
-            target="skill",
-            payload=f"mirror_only q={q!r} n={len(items)}",
-        )
-        return items
-    policy.assert_remote_catalog_allowed()
-    rows = await _hub_search(request, q=q, limit=limit)
-    filtered = _filter_hub_skill_rows(policy, user, rows)
-    policy.record(
-        actor=user.username,
-        action="market.search",
-        target="skill",
-        payload=f"q={q!r} n={len(filtered)}",
-    )
-    return filtered
-
-
-async def _governed_hub_rankings(
-    *,
-    ranking_type: str,
-    user: Any,
-    server: Any,
-) -> dict[str, Any]:
-    policy = market_policy_from_server(server)
-    policy.assert_market_enabled()
-    if policy.mode == "mirror_only":
-        items = _mirror_skill_search(server, user, q="", limit=50)
-        payload = {
-            "rankings": {
-                "local": {"section": "local", "skills": items, "total": len(items)},
-            },
-            "market_mode": policy.mode,
-        }
-        policy.record(
-            actor=user.username,
-            action="market.search",
-            target="skill",
-            payload=f"mirror_only rankings n={len(items)}",
-        )
-        return payload
-    policy.assert_remote_catalog_allowed()
-    payload = await _hub_rankings(ranking_type)
-    filtered = _filter_hub_rankings(policy, user, payload)
-    policy.record(
-        actor=user.username,
-        action="market.search",
-        target="skill",
-        payload=f"rankings type={ranking_type!r}",
-    )
-    return {**filtered, "market_mode": policy.mode}
-
-
 @router.get("/skills/hub/search", summary="Search SkillHub without an agent")
 async def hub_search_skills_global(
     request: Request,
     q: str = "",
     limit: int = 50,
-    user: Any = Depends(require_permission("skill_market")),
-    server: Any = Depends(get_server),
+    _user: Any = Depends(current_user),
 ) -> list[dict[str, Any]]:
     """Browse SkillHub while composing a new expert (no agent exists yet)."""
-    return await _governed_hub_search(request, q=q, limit=limit, user=user, server=server)
+    return await _hub_search(request, q=q, limit=limit)
 
 
 @router.get("/skills/hub/rankings", summary="SkillHub rankings without an agent")
 async def hub_rankings_global(
     type: str = "all",
-    user: Any = Depends(require_permission("skill_market")),
-    server: Any = Depends(get_server),
+    _user: Any = Depends(current_user),
 ) -> dict[str, Any]:
     """Browse SkillHub rankings while composing a new expert."""
-    return await _governed_hub_rankings(ranking_type=type, user=user, server=server)
+    return await _hub_rankings(type)
 
 
 @router.get("/agents/{agent_id}/skills/hub/search")
@@ -1607,7 +1463,7 @@ async def hub_search_skills(
     q: str = "",
     limit: int = 50,
     as_user: int | None = None,
-    user: Any = Depends(require_permission("skill_market")),
+    user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> list[dict[str, Any]]:
     """Search Tencent SkillHub over HTTP, with CLI compatibility fallback.
@@ -1616,7 +1472,7 @@ async def hub_search_skills(
     the install endpoint but is not used for the search itself.
     """
     require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
-    return await _governed_hub_search(request, q=q, limit=limit, user=user, server=server)
+    return await _hub_search(request, q=q, limit=limit)
 
 
 @router.get("/agents/{agent_id}/skills/hub/rankings")
@@ -1624,7 +1480,7 @@ async def hub_rankings(
     agent_id: str,
     type: str = "all",
     as_user: int | None = None,
-    user: Any = Depends(require_permission("skill_market")),
+    user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Fetch Tencent SkillHub rankings directly over HTTP.
@@ -1637,7 +1493,7 @@ async def hub_rankings(
     auth/routing symmetry with search/install; rankings are global.
     """
     require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
-    return await _governed_hub_rankings(ranking_type=type, user=user, server=server)
+    return await _hub_rankings(type)
 
 
 @router.post("/agents/{agent_id}/skills/hub/install", status_code=201)
@@ -1645,7 +1501,7 @@ async def hub_install_skill(
     agent_id: str,
     body: HubInstallBody,
     as_user: int | None = None,
-    user: Any = Depends(require_permission("skill_market")),
+    user: Any = Depends(require_permission("skills")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Install a SkillHub skill into the specified agent's workspace.
@@ -1667,7 +1523,6 @@ async def hub_install_skill(
         download_skillhub_package,
     )
 
-    policy = market_policy_from_server(server)
     try:
         skill_name = validate_skill_slug(body.skill_name)
     except SkillPackageError:
@@ -1675,11 +1530,6 @@ async def hub_install_skill(
             status_code=400,
             detail="skill_name is required and must not contain path separators or start with .",
         ) from None
-    policy.assert_install_skill(
-        user.id,
-        skill_name,
-        is_admin=bool(getattr(user, "is_admin", False)),
-    )
     display_name = (body.display_name or "").strip()
     icon_url = (body.icon_url or "").strip()
     label = (
@@ -1752,12 +1602,6 @@ async def hub_install_skill(
     except SkillPackageError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    policy.record(
-        actor=user.username,
-        action="market.install_skill",
-        target=skill_name,
-        payload=f"agent={agent_id} transport={transport}",
-    )
     return {
         "installed": True,
         "name": skill_name,

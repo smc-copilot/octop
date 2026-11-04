@@ -56,12 +56,6 @@ def _p(
 PERMISSIONS: dict[str, PermissionDef] = {
     # Ungrouped pages. Default-on for new users. Chat is not a permission.
     "experts": _p("experts", "nav", "专家", "Experts"),
-    "expert_market": _p(
-        "expert_market",
-        "nav",
-        "专家市场",
-        "Expert market",
-    ),
     "tasks": _p("tasks", "nav", "自动化", "Automation"),
     "token_usage": _p("token_usage", "nav", "Token 统计", "Token usage"),
     # --- settings (nav.settings) — listed & default-selected for new users ---
@@ -477,7 +471,6 @@ PAGE_TAB_EXPANSIONS: tuple[tuple[str, tuple[str, ...], bool], ...] = (
     ("plugins", ("plugin_market",), False),
     ("providers", ("model_generation", "model_decision"), False),
     ("skills", ("skill_builtin", "skill_market"), False),
-    ("experts", ("expert_market",), False),
 )
 
 # Pre-checked for new users. Stored explicitly — not granted unless written.

@@ -2030,8 +2030,6 @@ _PERSONALIZATION_TAB_PERMISSIONS = (
 _PERSONALIZATION_TAB_PERMISSIONS_FLAG = "granted_personalization_tab_permissions"
 _BRIDGE_PERMISSIONS = ("bridge",)
 _BRIDGE_PERMISSIONS_FLAG = "granted_bridge_permission"
-_MARKET_HUB_PERMISSIONS = ("expert_market", "skill_market")
-_MARKET_HUB_PERMISSIONS_FLAG = "granted_market_hub_permissions"
 
 
 def _parse_perm_list(raw: Any) -> list[str] | None:
@@ -2133,11 +2131,6 @@ def _grant_personalization_tab_permissions(db: DatabasePool) -> None:
 def _grant_bridge_permission(db: DatabasePool) -> None:
     """Grant cloud-collab once; /bridge used to be ungated for every signed-in user."""
     _grant_permission_keys_once(db, _BRIDGE_PERMISSIONS, _BRIDGE_PERMISSIONS_FLAG)
-
-
-def _grant_market_hub_permissions(db: DatabasePool) -> None:
-    """Grant expert/skill market once; hubs used to be open to signed-in users."""
-    _grant_permission_keys_once(db, _MARKET_HUB_PERMISSIONS, _MARKET_HUB_PERMISSIONS_FLAG)
 
 
 _PAGE_TAB_EXPANSIONS_FLAG = "expanded_page_tab_permissions_v1"
@@ -2273,5 +2266,4 @@ def run_migrations(db: DatabasePool) -> None:
     _grant_default_nav_permissions(db)
     _grant_personalization_tab_permissions(db)
     _grant_bridge_permission(db)
-    _grant_market_hub_permissions(db)
     _expand_page_tab_permissions(db)

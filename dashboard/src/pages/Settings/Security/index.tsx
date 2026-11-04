@@ -7,7 +7,6 @@ import {
   FolderLock,
   ScrollText,
   ShieldAlert,
-  Store,
   UserCheck,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -24,7 +23,6 @@ import tabStyles from "../AdvancedSettings/tabContent.module.less";
 import TabBar, { type TabBarItem } from "../../../components/TabLabel/TabBar";
 import AuditLogPanel from "./AuditLogPanel";
 import HitlToolsPicker from "./HitlToolsPicker";
-import MarketPolicyPanel from "./MarketPolicyPanel";
 import ToolGuardRulesPanel from "./ToolGuardRulesPanel";
 import styles from "./index.module.less";
 import ForbiddenPage from "../../../components/ForbiddenPage";
@@ -45,7 +43,6 @@ type SecurityTabKey =
   | "pii"
   | "tool_guard"
   | "skill_scan"
-  | "market"
   | "audit";
 
 const TABS: TabBarItem<SecurityTabKey>[] = [
@@ -54,7 +51,6 @@ const TABS: TabBarItem<SecurityTabKey>[] = [
   { key: "pii", labelKey: "security.tabPii", icon: EyeOff },
   { key: "tool_guard", labelKey: "security.tabToolGuard", icon: ShieldAlert },
   { key: "skill_scan", labelKey: "security.tabSkillScan", icon: FileSearch },
-  { key: "market", labelKey: "security.tabMarket", icon: Store },
   { key: "audit", labelKey: "security.tabAudit", icon: ScrollText },
 ];
 
@@ -64,7 +60,6 @@ function parseTab(raw: string | null): SecurityTabKey {
     raw === "pii" ||
     raw === "tool_guard" ||
     raw === "skill_scan" ||
-    raw === "market" ||
     raw === "audit"
   ) {
     return raw;
@@ -435,19 +430,16 @@ export default function SecuritySettingsPage() {
           <AuditLogPanel />
         </div>
       ) : null}
-      {activeTab === "market" ? <MarketPolicyPanel /> : null}
-      {/* Keep Form mounted (visually hidden on audit/market) so policy values persist. */}
+      {/* Keep Form mounted (visually hidden on audit) so policy values persist. */}
       <Form
         form={form}
         layout="vertical"
         disabled={loading}
         className={styles.panel}
-        hidden={activeTab === "audit" || activeTab === "market"}
+        hidden={activeTab === "audit"}
         preserve
       >
-        {activeTab !== "audit" && activeTab !== "market"
-          ? renderPolicyTab()
-          : null}
+        {activeTab !== "audit" ? renderPolicyTab() : null}
       </Form>
     </PageShell.Tabbed>
   );

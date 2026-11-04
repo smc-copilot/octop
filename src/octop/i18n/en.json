@@ -501,8 +501,6 @@
     "LDAP_USER_NOT_PROVISIONED": "This directory account has no Octop account yet. Ask an administrator to create one or enable automatic provisioning.",
     "LDAP_GROUP_NOT_ALLOWED": "This directory account is not in a group allowed to sign in. Ask an administrator to add you to an allowed group.",
     "EXPERT_MARKET_FAILED": "Expert market is temporarily unavailable. Please try again later.",
-    "MARKET_DISABLED": "The skill / expert market is disabled on this instance.",
-    "MARKET_SLUG_DENIED": "This market item is not allowed by the instance allowlist.",
     "SKILLHUB_SSL_FAILED": "SkillHub request failed: Python SSL error detected — on macOS try `brew reinstall openssl@3`, or check your system CA certificates.",
     "DESKTOP_SESSION_LIMIT": "Too many concurrent remote desktop streams (max {limit}). Close other connections and try again.",
     "DESKTOP_CAPTURE_FAILED": "Screen capture failed repeatedly. On Linux servers restart the virtual desktop; on macOS grant Screen Recording and Accessibility, then reconnect.",
