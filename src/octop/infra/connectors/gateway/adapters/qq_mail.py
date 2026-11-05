@@ -8,6 +8,7 @@ import imaplib
 import json
 import re
 import smtplib
+from html.parser import HTMLParser
 from datetime import datetime, timedelta
 from email import policy
 from email.mime.text import MIMEText
@@ -51,7 +52,11 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "Legacy raw IMAP SEARCH criteria; ignored when structured filters are set",
                 },
-                "limit": {"type": "integer", "description": "Max messages, default 10"},
+                "limit": {"type": "integer", "description": "Page size, default 10, max 50"},
+                "offset": {
+                    "type": "integer",
+                    "description": "Skip this many newest matches before the page (0 = first page)",
+                },
             },
         },
     },
@@ -235,15 +240,22 @@ def _email_search(creds: dict[str, Any], args: dict[str, Any]) -> str:
     limit = int(args.get("limit") or 10)
     if limit < 1:
         limit = 10
+    if limit > 50:
+        limit = 50
+    offset = int(args.get("offset") or 0)
+    if offset < 0:
+        offset = 0
     imap = _imap_login(creds)
     try:
         imap.select("INBOX")
         # NetEase rejects CHARSET UTF-8 on UID SEARCH; omit charset for compatibility.
         _typ, data = imap.uid("search", criteria)
         uids = (data[0] or b"").split()
-        uids = uids[-limit:]
+        newest_first = list(reversed(uids))
+        total = len(newest_first)
+        page = newest_first[offset : offset + limit]
         out: list[dict[str, str]] = []
-        for uid in reversed(uids):
+        for uid in page:
             _typ, msg_data = imap.uid(
                 "fetch", uid, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])"
             )
@@ -261,7 +273,26 @@ def _email_search(creds: dict[str, Any], args: dict[str, Any]) -> str:
         text = _err(creds, "list_text", count=len(out))
         if not out:
             text = _err(creds, "list_empty")
-        return _envelope({"view": "list", "items": out}, text)
+        payload: dict[str, Any] = {
+            "view": "list",
+            "items": out,
+            "offset": offset,
+            "limit": limit,
+            "total": total,
+            "has_more": offset + len(out) < total,
+        }
+        if args.get("unread") is True:
+            payload["unread"] = True
+        from_filter = str(args.get("from") or "").strip()
+        if from_filter:
+            payload["from"] = from_filter
+        if args.get("since_days") is not None:
+            payload["since_days"] = int(args["since_days"])
+        query = str(args.get("query") or "").strip()
+        if query and query.upper() != "ALL" and "unread" not in payload and "from" not in payload:
+            if "since_days" not in payload:
+                payload["query"] = query
+        return _envelope(payload, text)
     finally:
         with contextlib.suppress(Exception):
             imap.logout()
@@ -282,7 +313,7 @@ def _email_read(creds: dict[str, Any], args: dict[str, Any]) -> str:
         if not isinstance(raw, (bytes, bytearray)):
             raise ValueError(_err(creds, "uid_not_found", uid=uid))
         msg = _parse_message(bytes(raw))
-        body = _extract_body(msg)
+        body, body_html = _extract_bodies(msg)
         attachments = _list_attachment_names(msg)
         payload = {
             "view": "detail",
@@ -293,6 +324,8 @@ def _email_read(creds: dict[str, Any], args: dict[str, Any]) -> str:
             "body": body,
             "attachments": attachments,
         }
+        if body_html:
+            payload["body_html"] = body_html
         text = _err(
             creds,
             "detail_text",
@@ -564,11 +597,160 @@ def _list_attachment_names(msg: email.message.Message) -> list[str]:
     return names
 
 
-def _extract_body(msg: email.message.Message) -> str:
-    """Prefer text/plain; fall back to stripped text/html (PRD D12)."""
+_RICH_TAGS = frozenset(
+    {
+        "a",
+        "b",
+        "blockquote",
+        "br",
+        "code",
+        "div",
+        "em",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "hr",
+        "i",
+        "img",
+        "li",
+        "ol",
+        "p",
+        "pre",
+        "s",
+        "span",
+        "strong",
+        "table",
+        "tbody",
+        "td",
+        "th",
+        "thead",
+        "tr",
+        "u",
+        "ul",
+    }
+)
+_VOID_TAGS = frozenset({"br", "hr", "img"})
+_DROP_WITH_CHILDREN = frozenset(
+    {"script", "style", "iframe", "object", "embed", "form", "svg", "math"}
+)
+_SAFE_URL = re.compile(r"^(https?://|mailto:)", re.IGNORECASE)
+_UNSAFE_CSS = re.compile(r"(expression\s*\(|javascript:|url\s*\()", re.IGNORECASE)
+
+
+def _attr(value: str) -> str:
+    return (
+        value.replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _safe_url(value: str) -> str | None:
+    text = value.strip()
+    if _SAFE_URL.match(text):
+        return _attr(text)
+    return None
+
+
+def _safe_style(value: str) -> str | None:
+    text = " ".join(value.split())
+    if not text or _UNSAFE_CSS.search(text):
+        return None
+    return _attr(text[:500])
+
+
+class _MailHtmlSanitizer(HTMLParser):
+    """Rebuild mail HTML with an allowlisted tag set (no scripts or active URLs)."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._skip = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        name = tag.lower()
+        if name in _DROP_WITH_CHILDREN:
+            self._skip += 1
+            return
+        if self._skip or name not in _RICH_TAGS:
+            return
+        rendered = _render_open_tag(name, attrs)
+        if rendered:
+            self._parts.append(rendered)
+
+    def handle_endtag(self, tag: str) -> None:
+        name = tag.lower()
+        if name in _DROP_WITH_CHILDREN and self._skip:
+            self._skip -= 1
+            return
+        if self._skip or name not in _RICH_TAGS or name in _VOID_TAGS:
+            return
+        self._parts.append(f"</{name}>")
+
+    def handle_data(self, data: str) -> None:
+        if self._skip or not data:
+            return
+        self._parts.append(
+            data.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        )
+
+    def result(self) -> str:
+        return "".join(self._parts).strip()
+
+
+def _render_open_tag(name: str, attrs: list[tuple[str, str | None]]) -> str:
+    kept: list[str] = []
+    for key, raw in attrs:
+        attr = key.lower()
+        value = raw or ""
+        if attr == "style":
+            style = _safe_style(value)
+            if style:
+                kept.append(f'style="{style}"')
+        elif name == "a" and attr == "href":
+            href = _safe_url(value)
+            if href:
+                kept.append(f'href="{href}"')
+                kept.append('rel="noopener noreferrer"')
+                kept.append('target="_blank"')
+        elif name == "img" and attr in {"src", "alt", "width", "height"}:
+            if attr == "src":
+                src = _safe_url(value)
+                if src:
+                    kept.append(f'src="{src}"')
+            elif attr == "alt":
+                kept.append(f'alt="{_attr(value[:200])}"')
+            elif value.isdigit():
+                kept.append(f'{attr}="{value}"')
+        elif name in {"td", "th"} and attr in {"colspan", "rowspan"} and value.isdigit():
+            kept.append(f'{attr}="{value}"')
+    attrs_html = (" " + " ".join(kept)) if kept else ""
+    if name in _VOID_TAGS:
+        return f"<{name}{attrs_html}>"
+    return f"<{name}{attrs_html}>"
+
+
+def _sanitize_mail_html(html: str) -> str:
+    parser = _MailHtmlSanitizer()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:
+        return ""
+    return parser.result()
+
+
+def _extract_bodies(msg: email.message.Message) -> tuple[str, str]:
+    """Return ``(plain, sanitized_html)``.
+
+    ``plain`` prefers text/plain and otherwise strips HTML. ``sanitized_html``
+    is empty when the message has no HTML part.
+    """
+    plain = ""
+    html = ""
     if msg.is_multipart():
-        plain = ""
-        html = ""
         for part in msg.walk():
             ctype = part.get_content_type()
             payload = part.get_payload(decode=True)
@@ -578,15 +760,22 @@ def _extract_body(msg: email.message.Message) -> str:
                 plain = _decode_payload(part, payload)
             elif ctype == "text/html" and not html:
                 html = _decode_payload(part, payload)
-        if plain:
-            return plain
-        if html:
-            return _strip_html(html)
-        return ""
-    payload = msg.get_payload(decode=True)
-    if isinstance(payload, bytes):
-        text = _decode_payload(msg, payload)
-        if msg.get_content_type() == "text/html":
-            return _strip_html(text)
-        return text
-    return str(payload or "")
+    else:
+        payload = msg.get_payload(decode=True)
+        if isinstance(payload, bytes):
+            text = _decode_payload(msg, payload)
+            if msg.get_content_type() == "text/html":
+                html = text
+            else:
+                plain = text
+        elif payload:
+            plain = str(payload)
+    safe_html = _sanitize_mail_html(html) if html else ""
+    if not plain and html:
+        plain = _strip_html(html)
+    return plain, safe_html
+
+
+def _extract_body(msg: email.message.Message) -> str:
+    """Plain-text body for IM and the model (HTML is stripped)."""
+    return _extract_bodies(msg)[0]

@@ -153,6 +153,28 @@ def test_search_emails_structured_filters_build_imap_criteria() -> None:
     assert "SINCE " in criteria
 
 
+def test_search_emails_offset_pages_newest_first() -> None:
+    messages: dict[bytes, bytes] = {}
+    for index in range(1, 6):
+        messages[str(index).encode()] = (
+            f"From: u{index}@x.com\r\nSubject: s{index}\r\n\r\n".encode()
+        )
+    fake = _fake_imap_with_messages(messages)
+    with patch(
+        "octop.infra.connectors.gateway.adapters.qq_mail.imaplib.IMAP4_SSL",
+        return_value=fake,
+    ):
+        result = qq_mail.call_tool(
+            _CREDS, "search_emails", {"limit": 2, "offset": 2}
+        )
+    data = json.loads(result)["data"]
+    assert [row["uid"] for row in data["items"]] == ["3", "2"]
+    assert data["total"] == 5
+    assert data["offset"] == 2
+    assert data["limit"] == 2
+    assert data["has_more"] is True
+
+
 # ---------------------------------------------------------------------------
 # _email_read: BODY.PEEK + envelope + unknown-charset body
 # ---------------------------------------------------------------------------
@@ -219,10 +241,36 @@ def test_read_email_html_only_strips_to_text() -> None:
         return_value=fake,
     ):
         result = qq_mail.call_tool(_CREDS, "read_email", {"uid": "2"})
-    body = json.loads(result)["data"]["body"]
+    data = json.loads(result)["data"]
+    body = data["body"]
     assert "Hello" in body
     assert "world" in body
     assert "<b>" not in body
+    assert "<b>" in data["body_html"]
+    assert "<script" not in data["body_html"]
+
+
+def test_read_email_html_drops_active_content() -> None:
+    raw = (
+        b"From: Alice <a@b.com>\r\n"
+        b"Subject: html\r\n"
+        b'Content-Type: text/html; charset="utf-8"\r\n'
+        b"\r\n"
+        b'<p>Hi</p><script>alert(1)</script>'
+        b'<a href="javascript:alert(1)">bad</a>'
+        b'<a href="https://example.com">ok</a>'
+    )
+    fake = _fake_imap_with_messages({b"3": raw})
+    with patch(
+        "octop.infra.connectors.gateway.adapters.qq_mail.imaplib.IMAP4_SSL",
+        return_value=fake,
+    ):
+        result = qq_mail.call_tool(_CREDS, "read_email", {"uid": "3"})
+    html = json.loads(result)["data"]["body_html"]
+    assert "<script" not in html
+    assert "javascript:" not in html
+    assert 'href="https://example.com"' in html
+    assert ">ok<" in html
 
 
 # ---------------------------------------------------------------------------

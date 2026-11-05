@@ -26,12 +26,12 @@
         "en": "List recent mail"
       },
       "description": {
-        "zh": "用邮件卡片展示收件箱近期邮件",
-        "en": "Show recent inbox messages in a mail card"
+        "zh": "用邮件卡片展示收件箱近期邮件（模型只附一两句摘要）",
+        "en": "Show recent inbox in a mail card (caption only, no table)"
       },
       "prompt": {
-        "zh": "请用 search_emails 列出我收件箱最近的邮件，并以邮件卡片展示。",
-        "en": "Please list my recent inbox messages with search_emails and show them in the mail card."
+        "zh": "请用 search_emails 列出我收件箱最近的邮件并用邮件卡片展示；回复只要一两句摘要，不要再输出表格或逐封列表。",
+        "en": "List my recent inbox with search_emails in the mail card; reply with a 1–2 line caption only — no Markdown table or per-message dump."
       },
       "color": "#e0f2fe",
       "icon_name": "inbox"
@@ -46,8 +46,8 @@
         "en": "Filter to unread messages"
       },
       "prompt": {
-        "zh": "请列出我的未读邮件（unread=true），用卡片展示。",
-        "en": "Please list my unread emails (unread=true) in the mail card."
+        "zh": "请列出我的未读邮件（unread=true）并用卡片展示；回复只要一两句摘要，不要表格。",
+        "en": "List my unread emails (unread=true) in the mail card; 1–2 line caption only, no table."
       },
       "color": "#fef3c7",
       "icon_name": "mail"

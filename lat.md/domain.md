@@ -58,7 +58,7 @@ Chat turns install selected servers via [[src/octop/infra/agents/manager.py#Agen
 
 Write confirmation state is process-local ([[src/octop/infra/connectors/gateway/confirmations.py#ConfirmationStore]]); credentials never enter plugin `config_fields` or card `data`. Plugin host exposes only whitelisted read tools via [[src/octop/infra/agents/plugins/host.py#PluginHostFacade#invoke_connector_read_tool]], scoped to `actor.user_id`.
 
-Bundled `mail-assistant` (skill + UI) and expert library `mail-expert` deliver the chat card browse bridge and analysis/reply skills. See `feature/docs/邮件专家功能需求PRD.md`.
+Bundled `mail-assistant` (skill + UI) and expert library `mail-expert` deliver the chat card browse bridge and analysis/reply skills. The `mail_card` list view shows one row per message (`time · sender · subject`) with offset paging (`上一页` / `下一页`); click opens detail via the host bridge. Detail renders sanitized `body_html` when the message has an HTML part; `body` stays plain text for IM and the model. Dashboard list turns keep the card as the list UI and the expert reply to a 1–2 line caption (no duplicate Markdown table); IM uses `text` fallback. See `feature/docs/邮件专家功能需求PRD.md`.
 
 ## Users and auth
 

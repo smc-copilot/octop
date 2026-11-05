@@ -28,7 +28,8 @@ function cardShell(dark, children) {
     "data-octop-plugin-ui": "mail-card",
     style: {
       margin: 0,
-      maxWidth: 520,
+      width: "100%",
+      maxWidth: 720,
       borderRadius: 16,
       overflow: "hidden",
       background: dark ? "#18181b" : "#fff",
@@ -40,6 +41,40 @@ function cardShell(dark, children) {
     },
     children,
   });
+}
+
+/** Compact ``MM-DD HH:mm`` from RFC2822 / ISO date strings. */
+function formatMailTime(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "—";
+  const d = new Date(text);
+  if (Number.isNaN(d.getTime())) {
+    return text.length > 16 ? text.slice(0, 16) : text;
+  }
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  return mm + "-" + dd + " " + hh + ":" + mi;
+}
+
+/** Prefer display name from ``Name <addr@x>``. */
+function formatSender(from) {
+  const s = String(from || "").trim();
+  if (!s) return "(未知)";
+  const m = s.match(/^"?([^"<]+?)"?\s*</);
+  if (m && m[1].trim()) return m[1].trim();
+  return s;
+}
+
+function ellipsisStyle(flex) {
+  return {
+    flex: flex,
+    minWidth: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  };
 }
 
 function sendPrefill(props, text) {
@@ -72,10 +107,16 @@ function ListView(props) {
   const dark = props.dark;
   const d = props.data || {};
   const items = Array.isArray(d.items) ? d.items : [];
-  const [fromFilter, setFromFilter] = useState("");
-  const [unreadOnly, setUnreadOnly] = useState(false);
+  const [fromFilter, setFromFilter] = useState(d.from || "");
+  const [unreadOnly, setUnreadOnly] = useState(!!d.unread);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const pageSize = Number(d.limit) > 0 ? Number(d.limit) : 20;
+  const offset = Number(d.offset) > 0 ? Number(d.offset) : 0;
+  const total = Number(d.total) >= 0 ? Number(d.total) : items.length;
+  const hasMore = d.has_more === true || offset + items.length < total;
+  const page = Math.floor(offset / pageSize) + 1;
+  const pages = Math.max(1, Math.ceil((total || 0) / pageSize));
 
   const refresh = useCallback(
     async (extra) => {
@@ -85,18 +126,21 @@ function ListView(props) {
         const result = await runAction(props.host, "mail.list", {
           unread: extra && extra.unread != null ? extra.unread : unreadOnly || undefined,
           from: (extra && extra.from != null ? extra.from : fromFilter) || undefined,
-          limit: 20,
+          since_days: d.since_days,
+          query: d.query,
+          offset: extra && extra.offset != null ? extra.offset : 0,
+          limit: pageSize,
         });
         if (props.callId && result && result.data) {
           props.host.patchResult(props.callId, result.data);
         }
       } catch (err) {
-        setError((err && err.message) || "Failed to refresh");
+        setError((err && err.message) || "刷新失败");
       } finally {
         setBusy(false);
       }
     },
-    [props.host, props.callId, unreadOnly, fromFilter],
+    [props.host, props.callId, unreadOnly, fromFilter, d.since_days, d.query, pageSize],
   );
 
   const openDetail = useCallback(
@@ -109,7 +153,7 @@ function ListView(props) {
           props.host.patchResult(props.callId, result.data);
         }
       } catch (err) {
-        setError((err && err.message) || "Failed to open");
+        setError((err && err.message) || "打开失败");
       } finally {
         setBusy(false);
       }
@@ -120,7 +164,7 @@ function ListView(props) {
   return cardShell(
     dark,
     _jsxs("div", {
-      style: { padding: 14 },
+      style: { padding: 12 },
       children: [
         _jsxs("div", {
           style: {
@@ -131,7 +175,7 @@ function ListView(props) {
             flexWrap: "wrap",
           },
           children: [
-            _jsx("strong", { style: { fontSize: 14 }, children: "Inbox" }),
+            _jsx("strong", { style: { fontSize: 14 }, children: "收件箱" }),
             _jsxs("label", {
               style: { fontSize: 12, display: "flex", gap: 4, alignItems: "center" },
               children: [
@@ -140,13 +184,13 @@ function ListView(props) {
                   checked: unreadOnly,
                   onChange: (e) => setUnreadOnly(!!e.target.checked),
                 }),
-                "Unread",
+                "未读",
               ],
             }),
             _jsx("input", {
               value: fromFilter,
               onChange: (e) => setFromFilter(e.target.value),
-              placeholder: "From…",
+              placeholder: "发件人…",
               style: {
                 flex: 1,
                 minWidth: 120,
@@ -162,8 +206,8 @@ function ListView(props) {
               type: "button",
               style: btnStyle(dark, false),
               disabled: busy,
-              onClick: () => refresh({}),
-              children: busy ? "…" : "Refresh",
+              onClick: () => refresh({ offset: 0 }),
+              children: busy ? "…" : "刷新",
             }),
           ],
         }),
@@ -176,44 +220,128 @@ function ListView(props) {
         items.length === 0
           ? _jsx("div", {
               style: { fontSize: 13, opacity: 0.7 },
-              children: "No messages",
+              children: "暂无邮件",
             })
-          : items.map((row) =>
-              _jsxs(
-                "button",
-                {
-                  type: "button",
-                  onClick: () => openDetail(row.uid),
+          : _jsxs("div", {
+              style: {
+                display: "flex",
+                flexDirection: "column",
+                gap: 2,
+                borderRadius: 10,
+                overflow: "hidden",
+                border: dark ? "1px solid #27272a" : "1px solid #e2e8f0",
+              },
+              children: [
+                _jsxs("div", {
                   style: {
-                    display: "block",
-                    width: "100%",
-                    textAlign: "left",
-                    border: "none",
-                    background: dark ? "#27272a" : "#f8fafc",
-                    color: "inherit",
-                    borderRadius: 10,
-                    padding: "10px 12px",
-                    marginBottom: 6,
-                    cursor: "pointer",
+                    display: "flex",
+                    gap: 10,
+                    padding: "6px 10px",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    opacity: 0.55,
+                    background: dark ? "#09090b" : "#f8fafc",
                   },
                   children: [
-                    _jsx("div", {
-                      style: { fontSize: 12, opacity: 0.7 },
-                      children: row.from || "(unknown)",
-                    }),
-                    _jsx("div", {
-                      style: { fontSize: 13, fontWeight: 600 },
-                      children: row.subject || "(no subject)",
-                    }),
-                    _jsx("div", {
-                      style: { fontSize: 11, opacity: 0.55, marginTop: 2 },
-                      children: row.date || "",
-                    }),
+                    _jsx("span", { style: { flex: "0 0 88px" }, children: "时间" }),
+                    _jsx("span", { style: { flex: "0 0 128px" }, children: "发件人" }),
+                    _jsx("span", { style: { flex: 1 }, children: "主题" }),
                   ],
-                },
-                String(row.uid),
-              ),
-            ),
+                }),
+                items.map((row, idx) =>
+                  _jsxs(
+                    "button",
+                    {
+                      type: "button",
+                      title: "点击查看正文",
+                      onClick: () => openDetail(row.uid),
+                      disabled: busy,
+                      style: {
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        width: "100%",
+                        textAlign: "left",
+                        border: "none",
+                        borderTop:
+                          idx === 0
+                            ? "none"
+                            : dark
+                              ? "1px solid #27272a"
+                              : "1px solid #f1f5f9",
+                        background: "transparent",
+                        color: "inherit",
+                        padding: "8px 10px",
+                        cursor: busy ? "wait" : "pointer",
+                        fontSize: 12,
+                        lineHeight: 1.35,
+                      },
+                      onMouseEnter: (e) => {
+                        e.currentTarget.style.background = dark ? "#27272a" : "#f1f5f9";
+                      },
+                      onMouseLeave: (e) => {
+                        e.currentTarget.style.background = "transparent";
+                      },
+                      children: [
+                        _jsx("span", {
+                          style: {
+                            ...ellipsisStyle("0 0 88px"),
+                            fontVariantNumeric: "tabular-nums",
+                            opacity: 0.72,
+                          },
+                          children: formatMailTime(row.date),
+                        }),
+                        _jsx("span", {
+                          style: ellipsisStyle("0 0 128px"),
+                          title: row.from || "",
+                          children: formatSender(row.from),
+                        }),
+                        _jsx("span", {
+                          style: {
+                            ...ellipsisStyle("1 1 auto"),
+                            fontWeight: 600,
+                          },
+                          title: row.subject || "",
+                          children: row.subject || "(无主题)",
+                        }),
+                      ],
+                    },
+                    String(row.uid),
+                  ),
+                ),
+              ],
+            }),
+        total > pageSize || offset > 0
+          ? _jsxs("div", {
+              style: {
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 8,
+                marginTop: 10,
+              },
+              children: [
+                _jsx("button", {
+                  type: "button",
+                  style: btnStyle(dark, false),
+                  disabled: busy || offset <= 0,
+                  onClick: () => refresh({ offset: Math.max(0, offset - pageSize) }),
+                  children: "上一页",
+                }),
+                _jsx("span", {
+                  style: { fontSize: 12, opacity: 0.7 },
+                  children: "第 " + page + " / " + pages + " 页 · 共 " + total + " 封",
+                }),
+                _jsx("button", {
+                  type: "button",
+                  style: btnStyle(dark, false),
+                  disabled: busy || !hasMore,
+                  onClick: () => refresh({ offset: offset + pageSize }),
+                  children: "下一页",
+                }),
+              ],
+            })
+          : null,
       ],
     }),
   );
@@ -234,7 +362,7 @@ function DetailView(props) {
         props.host.patchResult(props.callId, result.data);
       }
     } catch (err) {
-      setError((err && err.message) || "Failed");
+      setError((err && err.message) || "返回失败");
     } finally {
       setBusy(false);
     }
@@ -251,7 +379,7 @@ function DetailView(props) {
         props.host.patchResult(props.callId, result.data);
       }
     } catch (err) {
-      setError((err && err.message) || "Failed");
+      setError((err && err.message) || "准备回复失败");
     } finally {
       setBusy(false);
     }
@@ -270,7 +398,7 @@ function DetailView(props) {
               style: btnStyle(dark, false),
               disabled: busy,
               onClick: backToList,
-              children: "← List",
+              children: "← 列表",
             }),
             _jsx("button", {
               type: "button",
@@ -281,14 +409,14 @@ function DetailView(props) {
                   props,
                   `Please analyze this email (uid ${d.uid}) with the mail-analysis skill.`,
                 ),
-              children: "Analyze",
+              children: "分析",
             }),
             _jsx("button", {
               type: "button",
               style: btnStyle(dark, true),
               disabled: busy,
               onClick: startReply,
-              children: "Reply",
+              children: "回复",
             }),
           ],
         }),
@@ -304,7 +432,7 @@ function DetailView(props) {
         }),
         _jsx("div", {
           style: { fontSize: 16, fontWeight: 700, margin: "4px 0" },
-          children: d.subject || "(no subject)",
+          children: d.subject || "(无主题)",
         }),
         _jsx("div", {
           style: { fontSize: 11, opacity: 0.55, marginBottom: 10 },
@@ -313,24 +441,38 @@ function DetailView(props) {
         Array.isArray(d.attachments) && d.attachments.length
           ? _jsx("div", {
               style: { fontSize: 11, opacity: 0.7, marginBottom: 8 },
-              children: "Attachments: " + d.attachments.join(", "),
+              children: "附件: " + d.attachments.join(", "),
             })
           : null,
-        _jsx("pre", {
-          style: {
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
-            fontSize: 13,
-            margin: 0,
-            fontFamily: "inherit",
-            background: dark ? "#09090b" : "#f8fafc",
-            padding: 10,
-            borderRadius: 8,
-            maxHeight: 320,
-            overflow: "auto",
-          },
-          children: d.body || "",
-        }),
+        d.body_html
+          ? _jsx("div", {
+              style: {
+                fontSize: 14,
+                lineHeight: 1.6,
+                wordBreak: "break-word",
+                background: dark ? "#09090b" : "#f8fafc",
+                padding: 12,
+                borderRadius: 8,
+                maxHeight: 480,
+                overflow: "auto",
+              },
+              dangerouslySetInnerHTML: { __html: d.body_html },
+            })
+          : _jsx("pre", {
+              style: {
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                fontSize: 13,
+                margin: 0,
+                fontFamily: "inherit",
+                background: dark ? "#09090b" : "#f8fafc",
+                padding: 10,
+                borderRadius: 8,
+                maxHeight: 480,
+                overflow: "auto",
+              },
+              children: d.body || "",
+            }),
       ],
     }),
   );
@@ -355,15 +497,15 @@ function DraftView(props) {
       children: [
         _jsx("div", {
           style: { fontSize: 14, fontWeight: 700, marginBottom: 8 },
-          children: confirmationRequired ? "Confirm send" : "Reply draft",
+          children: confirmationRequired ? "确认发送" : "回复草稿",
         }),
         _jsx("div", {
           style: { fontSize: 12, opacity: 0.75, marginBottom: 4 },
-          children: `To: ${to}`,
+          children: `收件人: ${to}`,
         }),
         _jsx("div", {
           style: { fontSize: 12, opacity: 0.75, marginBottom: 8 },
-          children: `Subject: ${subject}`,
+          children: `主题: ${subject}`,
         }),
         confirmationRequired
           ? _jsx("div", {
@@ -374,8 +516,7 @@ function DraftView(props) {
                 background: dark ? "#1e3a5f" : "#eff6ff",
                 marginBottom: 10,
               },
-              children:
-                "Approve the tool confirmation in chat to send. Reject to cancel.",
+              children: "请在聊天中批准工具确认以发送；拒绝即取消。",
             })
           : _jsx("textarea", {
               value: body,
@@ -405,7 +546,7 @@ function DraftView(props) {
                       props,
                       `Generate a reply template for email uid ${uid} using the reply-template skill.`,
                     ),
-                  children: "Template",
+                  children: "模板",
                 }),
                 _jsx("button", {
                   type: "button",
@@ -415,7 +556,7 @@ function DraftView(props) {
                       props,
                       `Polish this reply draft with the reply-polish skill:\n\n${body}`,
                     ),
-                  children: "Polish",
+                  children: "润色",
                 }),
                 _jsx("button", {
                   type: "button",
@@ -427,7 +568,7 @@ function DraftView(props) {
                         ? `Send a reply to email uid ${uid} with this body (use reply_email two-phase confirmation):\n\n${body}`
                         : `Send this email to ${to} with subject "${subject}" (use send_email two-phase confirmation):\n\n${body}`,
                     ),
-                  children: "Send",
+                  children: "发送",
                 }),
               ],
             })
@@ -465,10 +606,10 @@ function MailCard(props) {
       _jsxs("div", {
         style: { padding: 14, fontSize: 13 },
         children: [
-          _jsx("strong", { children: "Sent" }),
+          _jsx("strong", { children: "已发送" }),
           _jsx("div", {
             style: { marginTop: 6 },
-            children: `To ${d.to || ""} · ${d.subject || ""}`,
+            children: `收件人 ${d.to || ""} · ${d.subject || ""}`,
           }),
         ],
       }),

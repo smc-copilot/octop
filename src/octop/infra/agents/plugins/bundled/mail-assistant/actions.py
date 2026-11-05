@@ -18,6 +18,8 @@ class ListInput(BaseModel):
     from_addr: str | None = Field(default=None, alias="from")
     since_days: int | None = Field(default=None, ge=0, le=365)
     limit: int | None = Field(default=10, ge=1, le=50)
+    offset: int | None = Field(default=0, ge=0, le=5000)
+    query: str | None = None
     instance_id: str | None = None
 
 
@@ -73,6 +75,10 @@ def register_actions(facade: Any) -> tuple[ActionSpec, ...]:
             args["since_days"] = payload.since_days
         if payload.limit is not None:
             args["limit"] = payload.limit
+        if payload.offset:
+            args["offset"] = payload.offset
+        if payload.query:
+            args["query"] = payload.query
         result = await facade.invoke_connector_read_tool(
             actor,
             "qq-mail",

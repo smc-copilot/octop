@@ -10,7 +10,7 @@ Unit coverage for the personal-mailbox gateway used by Mail Expert.
 
 ### Structured search and BODY.PEEK
 
-`search_emails` builds IMAP criteria from structured filters; `read_email` fetches with `BODY.PEEK[]` and returns an `octop_ui` envelope.
+`search_emails` builds IMAP criteria from structured filters and pages newest-first via `offset`/`limit`. `read_email` uses `BODY.PEEK[]` and returns an `octop_ui` envelope, with plain `body` plus sanitized `body_html`.
 
 ### Two-phase send confirmation
 
