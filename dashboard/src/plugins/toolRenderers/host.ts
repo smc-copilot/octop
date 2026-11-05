@@ -333,7 +333,8 @@ export function createPluginUiToolHost(
           targetSessionId !== context.threadId
         )
           return false;
-        return chatStore.patchToolResultData(callId, nextData, targetSessionId);
+        chatStore.patchToolResultData(callId, nextData);
+        return true;
       },
     },
   });
