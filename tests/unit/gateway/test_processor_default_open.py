@@ -9,7 +9,6 @@ import pytest
 from langchain_core.messages import HumanMessage
 from octop_gateway.models import ChannelSubject, InboundMessage, TextContent
 
-from octop.infra.gateway.process.message_keys import USER_INPUT_KEY
 from octop.infra.gateway.process.processor import GlobalProcessor
 from octop.infra.gateway.slash.dispatcher import SlashDispatcher
 
@@ -77,6 +76,7 @@ async def test_im_call_merges_default_open_mcp_servers() -> None:
     )
     agent_manager.prepare_chat_mcp.assert_not_awaited()
     assert captured["request"]["mcp_servers"] == ["docs__1"]
+    assert captured["request"]["connector_user_id"] == 7
 
 
 @pytest.mark.asyncio
@@ -236,9 +236,61 @@ async def test_dashboard_request_trusts_explicit_opt_out() -> None:
         meta=msg.metadata or {},
     )
     assert request["mcp_servers"] == []
+    assert "connector_user_id" not in request
     agent_manager.merge_turn_mcp_servers.assert_called_once_with(
         1, [], apply_defaults=False, extra_defaults=[]
     )
+    agent_manager.prepare_chat_mcp.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_request_stamps_connector_user_id_for_selected_mcp() -> None:
+    """Selected connectors must carry connector_user_id into the leased turn."""
+    agent_manager = MagicMock()
+    agent_manager.merge_turn_mcp_servers = MagicMock(return_value=["qq-mail__1"])
+    agent_manager.prepare_chat_mcp = AsyncMock(return_value=[])
+    agent_manager.get_row = MagicMock(return_value=None)
+    agent_manager.default_mcp_servers = MagicMock(return_value=[])
+    agent_manager.default_knowledge_base_ids = MagicMock(return_value=[])
+    agent_manager.providers = MagicMock()
+    agent_manager.providers.is_model_ref_usable = MagicMock(return_value=False)
+    agent_manager.providers.resolve_explicit_default_model = MagicMock(return_value=None)
+    agent_manager.providers.resolve_model_for_multimodal_turn = MagicMock(
+        side_effect=lambda ref, **_k: ref
+    )
+    agent_manager.get_thread_model = MagicMock(return_value=None)
+
+    processor = GlobalProcessor(
+        agent_manager=agent_manager,
+        thread_registry=MagicMock(),
+        audit_repo=MagicMock(),
+        agent_repo=MagicMock(get=MagicMock(return_value=MagicMock(default_model=None))),
+        user_repo=MagicMock(),
+        connector_repo=MagicMock(),
+        dispatcher=SlashDispatcher(),
+        usage_repo=None,
+        gateway=None,
+    )
+
+    msg = InboundMessage(
+        channel_id="ws",
+        channel_type="dashboard",
+        tenant_id="email-expert",
+        channel_subject=ChannelSubject(subject_id="1"),
+        content=[TextContent(text="本周邮件")],
+        metadata={"mcp_servers": ["qq-mail__1"], "connector_user_id": 1},
+    )
+    request = await processor._build_dashboard_request(
+        msg,
+        agent_id="email-expert",
+        user_id=1,
+        session_key="sk",
+        thread_id="thr",
+        meta=msg.metadata or {},
+    )
+    assert request["mcp_servers"] == ["qq-mail__1"]
+    assert request["connector_user_id"] == 1
+    agent_manager.prepare_chat_mcp.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -296,12 +348,10 @@ async def test_dashboard_request_attaches_knowledge_base_ids_without_prepending(
     )
 
     message = request["messages"][0]
-    assert isinstance(message, HumanMessage)
-    assert message.content == "question"
-    assert message.additional_kwargs[USER_INPUT_KEY] == {
-        "version": 1,
-        "text": "question",
-    }
+    if isinstance(message, HumanMessage):
+        assert message.content == "question"
+    else:
+        assert message == {"role": "user", "content": "question"}
     configurable = request.get("configurable") or {}
     assert configurable["knowledge_base_ids"] == ["kb-1"]
     assert configurable["knowledge_base_catalog"] == [

@@ -1111,6 +1111,7 @@ class GlobalProcessor:
             user_text=msg.text,
             mcp_servers=mcp_servers,
             locale=locale,
+            user_id=user_id,
         )
 
         yield MessageEvent.typing()
@@ -1787,8 +1788,6 @@ class GlobalProcessor:
             agent_id=agent_id,
         )
 
-        if mcp_servers:
-            request["mcp_servers"] = mcp_servers
         if "skills" in meta:
             request["skills"] = meta["skills"]
         self._apply_turn_hitl_policy(thread_id, meta)
@@ -1800,6 +1799,8 @@ class GlobalProcessor:
             user_text=msg.text,
             mcp_servers=mcp_servers,
             locale=locale,
+            user_id=user_id,
+            dashboard_explicit_mcp=isinstance(explicit_mcp, list),
         )
 
     def _apply_turn_hitl_policy(self, thread_id: str, meta: dict[str, Any] | None) -> None:
@@ -1856,8 +1857,11 @@ class GlobalProcessor:
         user_text: str,
         mcp_servers: list[str] | None,
         locale: str,
+        user_id: int | None = None,
+        dashboard_explicit_mcp: bool = False,
     ) -> dict[str, Any]:
         from octop.infra.agents.conversation_mode import execute_user_message
+        from octop.infra.agents.teams import is_team_agent  # noqa: PLC0415
 
         mode, execute_path = self._sync_and_resolve_conversation_mode(
             agent_id, thread_id, meta=meta, user_text=user_text
@@ -1867,9 +1871,18 @@ class GlobalProcessor:
         self._attach_conversation_mode(request, mode)
         if mode in ("ask", "plan"):
             request.pop("mcp_servers", None)
+            request.pop("connector_user_id", None)
             request["skills"] = []
         elif mcp_servers:
-            request["mcp_servers"] = mcp_servers
+            # Leased ``_turn_mcp_tools`` gates allow_call on ContextVars derived
+            # from these keys — without connector_user_id the wrappers deny every call.
+            request["mcp_servers"] = list(mcp_servers)
+            if user_id is not None:
+                request["connector_user_id"] = user_id
+        elif dashboard_explicit_mcp and not is_team_agent(self._agent_manager.get_row(agent_id)):
+            # Dashboard sent mcp_servers=[] to opt out of default_open for this turn.
+            request["mcp_servers"] = []
+            request.pop("connector_user_id", None)
         return request
 
     def _attach_conversation_mode(self, request: dict[str, Any], mode: Any) -> None:
@@ -1942,14 +1955,16 @@ class GlobalProcessor:
         apply_defaults: bool | None = None,
         raise_on_failure: bool = True,
     ) -> list[str] | None:
-        """Merge turn picks with default_open and ensure tools are loaded.
+        """Merge turn picks with default_open; tool load waits for the MCP lease.
 
-        Dashboard / HTTP paths should keep ``raise_on_failure=True`` so the
-        client sees a clear MCP load error. IM ingress uses ``False`` so a
-        flaky connector does not abort the whole message turn.
+        ``prepare_chat_mcp`` runs inside ``AgentManager._turn_mcp_tools`` under the
+        per-agent execution lease so ContextVars and graph mutation stay aligned.
+        ``raise_on_failure`` is retained for call-site compatibility; load failures
+        surface from the leased turn instead.
         """
         from octop.infra.agents.teams import is_team_agent  # noqa: PLC0415
-        from octop.infra.errors import ErrorCode, OctopError  # noqa: PLC0415
+
+        _ = raise_on_failure
 
         # Team hosts only dispatch — never attach MCP tools.
         if is_team_agent(self._agent_manager.get_row(agent_id)):
@@ -1963,22 +1978,6 @@ class GlobalProcessor:
             extra_defaults=extra_defaults,
         )
         if not merged:
-            return None
-        failed = await self._agent_manager.prepare_chat_mcp(
-            agent_id,
-            merged,
-            connector_user_id=user_id,
-        )
-        if failed:
-            detail = f"mcp load failed: {', '.join(failed)}"
-            if raise_on_failure:
-                raise OctopError(ErrorCode.CONNECTOR_MCP_LOAD_FAILED, detail)
-            logger.warning(
-                "skipping turn MCP for agent=%s user=%s (%s)",
-                agent_id,
-                user_id,
-                detail,
-            )
             return None
         return merged
 

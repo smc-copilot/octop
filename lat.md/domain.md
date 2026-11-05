@@ -50,7 +50,7 @@ Connectors cover OAuth/MCP catalog metadata, credential crypto, and MCP gateway 
 
 HTTP surface is `api/routers/connectors.py`. Agent start assembles MCP servers from connector bindings rather than hard-coding vendor SDKs in the harness.
 
-Chat turns install selected servers via [[src/octop/infra/agents/manager.py#AgentManager#_turn_mcp_tools]] / `prepare_chat_mcp`, then pass `mcp_servers` into harness so `MCPToolMiddleware` can expose them. [[src/octop/infra/agents/manager.py#AgentManager#_prepare_stream_request]] strips only Octop-only keys (`connector_user_id`, `_resume_mcp_context`) — not `mcp_servers`.
+Chat turns resolve selected servers in [[src/octop/infra/gateway/process/processor.py#GlobalProcessor#_resolve_turn_mcp_servers]] (merge only), stamp `mcp_servers` plus `connector_user_id` onto the harness request, then install tools under lease via [[src/octop/infra/agents/manager.py#AgentManager#_turn_mcp_tools]] / `prepare_chat_mcp` so allow_call ContextVars match the caller. [[src/octop/infra/agents/manager.py#AgentManager#_prepare_stream_request]] strips only Octop-only keys (`connector_user_id`, `_resume_mcp_context`) — not `mcp_servers`.
 
 ### Personal mailbox and Mail Expert
 
