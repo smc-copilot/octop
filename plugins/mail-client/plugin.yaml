@@ -1,0 +1,11 @@
+id: mail-client
+version: 0.1.0
+name: Mail Client
+description: 可配置的 POP3 收信 + SMTP 纯文本发信客户端。在「工具管理」填写邮箱服务器后，聊天中以卡片展示收件箱、邮件正文与发送结果。
+icon: "✉️"
+group: tools
+kind: tool
+entry: main.py
+ui:
+  entry: ui/dist/index.js
+  manifest: ui/dist/manifest.json
