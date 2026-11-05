@@ -2,28 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { generateId } from "../../../utils/messageParser";
 import type { ChatAttachment, UserComposerContext } from "./sseHelpers";
 import * as chatStore from "./chatStore";
-import {
-  getAuthSessionEpoch,
-  subscribeAuthSession,
-} from "../../../api/authSession";
-import type {
-  ComposerSelectionCapture,
-  PluginJsonObject,
-} from "../../../plugins/toolRenderers/types";
-import type { HitlSessionPolicy } from "../utils/hitlSessionPolicy";
 
 export const CHAT_QUEUE_MAX_ITEMS = 10;
-
-export type SubmitResult =
-  | {
-      status: "accepted";
-      acceptedTarget?: { agentId: string; threadId: string };
-      acceptedId?: string;
-    }
-  | {
-      status: "rejected";
-      reason: "empty" | "full" | "pending" | "blocked" | "cancelled";
-    };
 
 export type QueuedChatItem = {
   id: string;
@@ -32,60 +12,14 @@ export type QueuedChatItem = {
   composerContext?: UserComposerContext;
   modelRef?: string | null;
   createdAt: number;
-  status: "queued" | "sending" | "blocked" | "uncertain";
-  pluginSelection?: readonly {
-    pluginId: string;
-    generation: string;
-    selection: ComposerSelectionCapture;
-  }[];
-  pluginContext?: Readonly<Record<string, PluginJsonObject>>;
-  authEpoch: number;
-  target: { agentId: string; threadId: string };
-  displayOrigin?: { agentId: string; threadId: string | null };
-  editMessageId?: string;
-  bound: boolean;
-  nativeOptions?: NativeExecutionSnapshot;
 };
-
-export type NativeExecutionSnapshot = Readonly<{
-  modelRef: string | null;
-  connectors: readonly string[];
-  knowledgeBaseIds: readonly string[];
-  targetAgentIds: readonly string[];
-  reasoningMode: "auto" | "enabled" | "disabled";
-  reasoningEffort: string | null;
-  conversationMode: "ask" | "plan" | "craft";
-  hitlPolicy?: HitlSessionPolicy;
-}>;
 
 export type EnqueueChatItemInput = {
   text: string;
   attachments?: ChatAttachment[];
   composerContext?: UserComposerContext;
   modelRef?: string | null;
-  pluginSelection?: QueuedChatItem["pluginSelection"];
-  pluginContext?: QueuedChatItem["pluginContext"];
-  authEpoch?: number;
-  nativeOptions?: NativeExecutionSnapshot;
-  displayOrigin?: { agentId: string; threadId: string | null };
-  editMessageId?: string;
-  bound?: boolean;
 };
-
-export type NativeTarget = Readonly<{ agentId: string; threadId: string }>;
-
-function snapshot<T>(value: T): T {
-  if (value === null || typeof value !== "object") return value;
-  const copy = Array.isArray(value)
-    ? value.map((item) => snapshot(item))
-    : Object.fromEntries(
-        Object.entries(value as Record<string, unknown>).map(([key, item]) => [
-          key,
-          snapshot(item),
-        ]),
-      );
-  return Object.freeze(copy) as T;
-}
 
 export type ChatQueueFlushContext = {
   agentId: string;
@@ -93,13 +27,11 @@ export type ChatQueueFlushContext = {
   queueKey: string;
 };
 
-export type ChatQueueFlushResult = SubmitResult | { status: "uncertain" };
-
-/** Resolve only after the existing stream reaches a terminal outcome. */
+/** Return `false` to re-queue the item at the head after a failed send. */
 export type ChatQueueFlushHandler = (
   item: QueuedChatItem,
   ctx: ChatQueueFlushContext,
-) => Promise<ChatQueueFlushResult>;
+) => boolean | void;
 
 export function threadQueueKey(
   agentId: string | null | undefined,
@@ -147,7 +79,7 @@ function defaultSubscribeStreamEnd(
 
 function defaultIsThreadStreaming(threadId: string): boolean {
   if (!threadId) return false;
-  return chatStore.isSessionBusyForTurnDispatch(threadId);
+  return chatStore.getSnapshot(threadId).isStreaming;
 }
 
 interface UseChatMessageQueueParams {
@@ -193,7 +125,7 @@ export function useChatMessageQueue({
   shouldDeferFlushRef.current = shouldDeferFlush;
   const isThreadStreamingRef = useRef(isThreadStreaming);
   isThreadStreamingRef.current = isThreadStreaming;
-  const flushTimerRef = useRef(new Map<string, number>());
+  const flushTimerRef = useRef<number | null>(null);
   /** Streaming edge is tracked per queue key so thread switches never mis-flush. */
   const streamStateRef = useRef<{ key: string; streaming: boolean }>({
     key,
@@ -205,62 +137,32 @@ export function useChatMessageQueue({
     setQueues(next);
   }, []);
 
-  const enqueueForTarget = useCallback(
-    (target: NativeTarget, input: EnqueueChatItemInput): SubmitResult => {
+  const enqueue = useCallback(
+    (input: EnqueueChatItemInput): "ok" | "empty" | "full" => {
       const trimmed = input.text.trim();
       const hasAttachments = Boolean(input.attachments?.length);
-      if (!trimmed && !hasAttachments)
-        return { status: "rejected", reason: "empty" };
+      if (!trimmed && !hasAttachments) return "empty";
 
-      const targetKey = threadQueueKey(target.agentId, target.threadId);
-      const latest = queuesRef.current[targetKey] ?? [];
-      if (latest.length >= CHAT_QUEUE_MAX_ITEMS)
-        return { status: "rejected", reason: "full" };
+      const latest = queuesRef.current[key] ?? [];
+      if (latest.length >= CHAT_QUEUE_MAX_ITEMS) return "full";
 
       const item: QueuedChatItem = {
         id: generateId(),
         text: trimmed,
-        attachments: input.attachments?.length
-          ? snapshot(input.attachments)
-          : undefined,
+        attachments:
+          input.attachments && input.attachments.length > 0
+            ? input.attachments.map((a) => ({ ...a }))
+            : undefined,
         composerContext: input.composerContext
-          ? snapshot(input.composerContext)
+          ? { ...input.composerContext }
           : undefined,
         modelRef: input.modelRef ?? null,
         createdAt: Date.now(),
-        status: "queued",
-        target: { ...target },
-        displayOrigin: input.displayOrigin,
-        editMessageId: input.editMessageId,
-        bound: input.bound ?? false,
-        pluginSelection: input.pluginSelection
-          ? snapshot(input.pluginSelection)
-          : undefined,
-        pluginContext: input.pluginContext
-          ? snapshot(input.pluginContext)
-          : undefined,
-        authEpoch: input.authEpoch ?? getAuthSessionEpoch(),
-        nativeOptions: input.nativeOptions
-          ? snapshot(input.nativeOptions)
-          : undefined,
       };
-      writeQueues({ ...queuesRef.current, [targetKey]: [...latest, item] });
-      return {
-        status: "accepted",
-        acceptedId: item.id,
-        acceptedTarget: target,
-      };
+      writeQueues({ ...queuesRef.current, [key]: [...latest, item] });
+      return "ok";
     },
-    [writeQueues],
-  );
-
-  const enqueue = useCallback(
-    (input: EnqueueChatItemInput) =>
-      enqueueForTarget(
-        { agentId: agentId ?? "", threadId: threadId ?? "" },
-        input,
-      ),
-    [agentId, threadId, enqueueForTarget],
+    [key, writeQueues],
   );
 
   const remove = useCallback(
@@ -273,19 +175,6 @@ export function useChatMessageQueue({
         return;
       }
       writeQueues({ ...queuesRef.current, [key]: next });
-    },
-    [key, writeQueues],
-  );
-
-  const setStatus = useCallback(
-    (id: string, status: QueuedChatItem["status"]) => {
-      const current = queuesRef.current[key] ?? [];
-      const next = current.map((item) =>
-        item.id === id ? { ...item, status } : item,
-      );
-      if (next.some((item, index) => item !== current[index])) {
-        writeQueues({ ...queuesRef.current, [key]: next });
-      }
     },
     [key, writeQueues],
   );
@@ -310,82 +199,50 @@ export function useChatMessageQueue({
     writeQueues(withoutQueueKey(queuesRef.current, key));
   }, [key, writeQueues]);
 
-  const removeById = useCallback(
-    (id: string) => {
-      for (const [queueKey, current] of Object.entries(queuesRef.current)) {
-        if (!current.some((item) => item.id === id)) continue;
-        const next = current.filter((item) => item.id !== id);
-        writeQueues(
-          next.length
-            ? { ...queuesRef.current, [queueKey]: next }
-            : withoutQueueKey(queuesRef.current, queueKey),
-        );
-        return;
+  /** Atomically pop head by id for the given queue key. */
+  const dequeueHead = useCallback(
+    (queueKey: string): QueuedChatItem | null => {
+      const current = queuesRef.current[queueKey] ?? [];
+      if (current.length === 0) return null;
+      const head = current[0] ?? null;
+      if (!head) return null;
+      const next = current.filter((item) => item.id !== head.id);
+      if (next.length === 0) {
+        writeQueues(withoutQueueKey(queuesRef.current, queueKey));
+      } else {
+        writeQueues({ ...queuesRef.current, [queueKey]: next });
       }
+      return head;
     },
     [writeQueues],
   );
 
-  const setStatusById = useCallback(
-    (id: string, status: QueuedChatItem["status"]) => {
-      for (const [queueKey, current] of Object.entries(queuesRef.current)) {
-        if (!current.some((item) => item.id === id)) continue;
-        writeQueues({
-          ...queuesRef.current,
-          [queueKey]: current.map((item) =>
-            item.id === id ? { ...item, status } : item,
-          ),
-        });
-        return;
-      }
+  const requeueFront = useCallback(
+    (queueKey: string, item: QueuedChatItem) => {
+      const current = queuesRef.current[queueKey] ?? [];
+      if (current.some((entry) => entry.id === item.id)) return;
+      const next =
+        current.length >= CHAT_QUEUE_MAX_ITEMS
+          ? [item, ...current.slice(0, CHAT_QUEUE_MAX_ITEMS - 1)]
+          : [item, ...current];
+      writeQueues({ ...queuesRef.current, [queueKey]: next });
     },
     [writeQueues],
   );
 
-  const getById = useCallback((id: string) => {
-    for (const current of Object.values(queuesRef.current)) {
-      const found = current.find((item) => item.id === id);
-      if (found) return found;
+  const cancelScheduledFlush = useCallback(() => {
+    if (flushTimerRef.current != null) {
+      window.clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
     }
-    return null;
   }, []);
-
-  const inFlightRef = useRef(new Set<string>());
-
-  const cancelScheduledFlush = useCallback((queueKey?: string) => {
-    if (queueKey !== undefined) {
-      const timer = flushTimerRef.current.get(queueKey);
-      if (timer !== undefined) window.clearTimeout(timer);
-      flushTimerRef.current.delete(queueKey);
-      return;
-    }
-    for (const timer of flushTimerRef.current.values()) {
-      window.clearTimeout(timer);
-    }
-    flushTimerRef.current.clear();
-  }, []);
-
-  useEffect(
-    () =>
-      subscribeAuthSession(() => {
-        cancelScheduledFlush();
-        inFlightRef.current.clear();
-        writeQueues({});
-      }),
-    [cancelScheduledFlush, writeQueues],
-  );
 
   const scheduleFlush = useCallback(
     (queueKey: string) => {
-      cancelScheduledFlush(queueKey);
-      const queued = queuesRef.current[queueKey] ?? [];
-      if (queued.length === 0 || queued[0]?.status !== "queued") return;
-      if (inFlightRef.current.has(queueKey)) return;
-      const timer = window.setTimeout(() => {
-        flushTimerRef.current.delete(queueKey);
-        const currentBeforeDispatch = queuesRef.current[queueKey] ?? [];
-        const head = currentBeforeDispatch[0];
-        if (!head || head.status !== "queued") return;
+      cancelScheduledFlush();
+      if ((queuesRef.current[queueKey] ?? []).length === 0) return;
+      flushTimerRef.current = window.setTimeout(() => {
+        flushTimerRef.current = null;
         const { agentId: flushAgentId, threadId: flushThreadId } =
           parseThreadQueueKey(queueKey);
         // Another turn may have started between schedule and fire.
@@ -400,73 +257,23 @@ export function useChatMessageQueue({
         ) {
           return;
         }
-        inFlightRef.current.add(queueKey);
-        writeQueues({
-          ...queuesRef.current,
-          [queueKey]: currentBeforeDispatch.map((item) =>
-            item.id === head.id ? { ...item, status: "sending" } : item,
-          ),
-        });
-        let flushResult: Promise<ChatQueueFlushResult>;
+        const head = dequeueHead(queueKey);
+        if (!head) return;
         try {
-          flushResult = onFlushRef.current(head, {
+          const ok = onFlushRef.current(head, {
             agentId: flushAgentId,
             threadId: flushThreadId,
             queueKey,
           });
+          if (ok === false) {
+            requeueFront(queueKey, head);
+          }
         } catch {
-          flushResult = Promise.reject(new Error("Queue flush failed"));
+          requeueFront(queueKey, head);
         }
-        void Promise.resolve(flushResult)
-          .then((result) => {
-            const current = queuesRef.current[queueKey] ?? [];
-            if (!current.some((item) => item.id === head.id)) return;
-            if (result?.status === "accepted") {
-              const next = current.filter((item) => item.id !== head.id);
-              writeQueues(
-                next.length
-                  ? { ...queuesRef.current, [queueKey]: next }
-                  : withoutQueueKey(queuesRef.current, queueKey),
-              );
-            } else {
-              const status =
-                result?.status === "uncertain" ? "uncertain" : "blocked";
-              writeQueues({
-                ...queuesRef.current,
-                [queueKey]: current.map((item) =>
-                  item.id === head.id ? { ...item, status } : item,
-                ),
-              });
-            }
-          })
-          .catch(() => {
-            const current = queuesRef.current[queueKey] ?? [];
-            if (current.some((item) => item.id === head.id)) {
-              writeQueues({
-                ...queuesRef.current,
-                [queueKey]: current.map((item) =>
-                  item.id === head.id ? { ...item, status: "uncertain" } : item,
-                ),
-              });
-            }
-          })
-          .finally(() => {
-            inFlightRef.current.delete(queueKey);
-            if (queuesRef.current[queueKey]?.[0]?.status === "queued") {
-              scheduleFlush(queueKey);
-            }
-          });
       }, 0);
-      flushTimerRef.current.set(queueKey, timer);
     },
-    [cancelScheduledFlush, writeQueues],
-  );
-
-  const requestFlush = useCallback(
-    (target: NativeTarget) => {
-      scheduleFlush(threadQueueKey(target.agentId, target.threadId));
-    },
-    [scheduleFlush],
+    [cancelScheduledFlush, dequeueHead, requeueFront],
   );
 
   useEffect(() => {
@@ -478,17 +285,17 @@ export function useChatMessageQueue({
       if (!isStreaming) {
         scheduleFlush(key);
       } else {
-        cancelScheduledFlush(key);
+        cancelScheduledFlush();
       }
     } else if (prev.streaming && !isStreaming) {
       // Same thread: only flush on true → false.
       scheduleFlush(key);
     } else if (isStreaming) {
       // Stream resumed before the timer fired — keep the queue intact.
-      cancelScheduledFlush(key);
+      cancelScheduledFlush();
     }
 
-    return () => cancelScheduledFlush(key);
+    return cancelScheduledFlush;
   }, [key, isStreaming, scheduleFlush, cancelScheduledFlush]);
 
   // Background (and active) threads: flush when chatStore reports streamEnd.
@@ -502,15 +309,8 @@ export function useChatMessageQueue({
 
   return {
     items,
-    allItems: Object.values(queues).flat(),
     enqueue,
-    enqueueForTarget,
-    requestFlush,
     remove,
-    removeById,
-    setStatus,
-    setStatusById,
-    getById,
     reclaim,
     clear,
   };

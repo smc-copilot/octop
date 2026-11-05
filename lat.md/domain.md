@@ -50,15 +50,7 @@ Connectors cover OAuth/MCP catalog metadata, credential crypto, and MCP gateway 
 
 HTTP surface is `api/routers/connectors.py`. Agent start assembles MCP servers from connector bindings rather than hard-coding vendor SDKs in the harness.
 
-Chat turns resolve selected servers in [[src/octop/infra/gateway/process/processor.py#GlobalProcessor#_resolve_turn_mcp_servers]] (merge only), stamp `mcp_servers` plus `connector_user_id` onto the harness request, then install tools under lease via [[src/octop/infra/agents/manager.py#AgentManager#_turn_mcp_tools]] / `prepare_chat_mcp` so allow_call ContextVars match the caller. [[src/octop/infra/agents/manager.py#AgentManager#_prepare_stream_request]] strips only Octop-only keys (`connector_user_id`, `_resume_mcp_context`) — not `mcp_servers`.
-
-### Personal mailbox and Mail Expert
-
-`qq-mail` is the personal IMAP+SMTP connector: structured search, `BODY.PEEK` reads, `octop_ui` mail cards, and two-phase send/reply with in-memory confirmation tokens plus HITL `interrupt_on`.
-
-Write confirmation state is process-local ([[src/octop/infra/connectors/gateway/confirmations.py#ConfirmationStore]]); credentials never enter plugin `config_fields` or card `data`. Plugin host exposes only whitelisted read tools via [[src/octop/infra/agents/plugins/host.py#PluginHostFacade#invoke_connector_read_tool]], scoped to `actor.user_id`.
-
-Bundled `mail-assistant` (skill + UI) and expert library `mail-expert` deliver the chat card browse bridge and analysis/reply skills. See `feature/docs/邮件专家功能需求PRD.md`.
+Chat turns merge selected servers in [[src/octop/infra/gateway/process/processor.py#GlobalProcessor#_resolve_turn_mcp_servers]] and load them with [[src/octop/infra/agents/manager.py#AgentManager#prepare_chat_mcp]].
 
 ## Users and auth
 

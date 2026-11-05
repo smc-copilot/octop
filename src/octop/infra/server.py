@@ -524,7 +524,6 @@ class OctopServer:
             config=config,
             expert_catalog=self.expert_catalog,
             plugin_manager=self.plugin_manager,
-            plugin_host=self.plugin_host,
         )
 
         from octop.infra.history.trajectory.live import TrajectoryLiveBus  # noqa: PLC0415

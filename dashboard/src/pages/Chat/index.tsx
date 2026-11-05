@@ -411,7 +411,6 @@ function ChatPageInner() {
     dockMode,
     openTabs,
     activeTabId,
-    toolScopeIdentity,
     panelSizes: dockPanelSizes,
     isResizing: dockIsResizing,
     handleResizeStart: dockHandleResizeStart,
@@ -430,7 +429,6 @@ function ChatPageInner() {
     focusToolUiTab,
     closeTab: closeDockTab,
     setActiveTab: setDockActiveTab,
-    registerToolUiBinding,
   } = useChatDockPanel(isMobile, resolvedAgentId);
 
   const chromeCheckInFlightRef = useRef(false);
@@ -715,7 +713,7 @@ function ChatPageInner() {
     [chatSkills, chatConnectors, chatKnowledgeBases, chatAgentOptions],
   );
 
-  const { handleSend, beginSubmission } = useChatSend({
+  const { handleSend } = useChatSend({
     resolvedAgentId,
     activeThreadId,
     selectedModel,
@@ -755,10 +753,10 @@ function ChatPageInner() {
       text: string,
       attachments?: ChatAttachment[],
       overrides?: ChatSendOverrides,
-    ): boolean => {
+    ) => {
       if (interceptUserMessage(text)) {
         // The workflow intercepted the message — don't send it to the agent
-        return true;
+        return;
       }
       const targetThreadId = overrides?.threadId ?? activeThreadId ?? undefined;
       const ask =
@@ -771,14 +769,14 @@ function ChatPageInner() {
         const trimmed = text.trim();
         if (attachments && attachments.length > 0) {
           antMessage.warning(t("chat.ask.useCardForAttachments"));
-          return false;
+          return;
         }
-        if (!trimmed) return false;
+        if (!trimmed) return;
         resumeHitl(
           ask.actions.map(() => ({ type: "respond", message: trimmed })),
           targetThreadId,
         );
-        return true;
+        return;
       }
       const blocked =
         targetThreadId && targetThreadId === activeThreadId
@@ -788,9 +786,9 @@ function ChatPageInner() {
           : hasPendingHitlPause;
       if (blocked) {
         antMessage.warning(t("chat.hitl.finishPendingFirst"));
-        return false;
+        return;
       }
-      return handleSend(text, attachments, overrides);
+      handleSend(text, attachments, overrides);
     },
     [
       interceptUserMessage,
@@ -804,10 +802,10 @@ function ChatPageInner() {
   );
 
   const flushQueuedItem = useCallback(
-    async (item: QueuedChatItem, ctx: ChatQueueFlushContext) => {
+    (item: QueuedChatItem, ctx: ChatQueueFlushContext): boolean => {
       if (!ctx.threadId) {
         antMessage.error(t("chat.queue.flushFailed"));
-        return { status: "rejected" as const, reason: "blocked" as const };
+        return false;
       }
       // Bypass skill-recording intercept — queued text must not be swallowed
       // after it has already left the queue. Target the queued thread/agent so
@@ -824,12 +822,8 @@ function ChatPageInner() {
       });
       if (!ok) {
         antMessage.error(t("chat.queue.flushFailed"));
-        return { status: "rejected" as const, reason: "blocked" as const };
       }
-      return {
-        status: "accepted" as const,
-        acceptedTarget: { agentId: ctx.agentId, threadId: ctx.threadId },
-      };
+      return ok;
     },
     [handleSend, t],
   );
@@ -856,7 +850,6 @@ function ChatPageInner() {
     enqueue: enqueueQueued,
     remove: removeQueued,
     reclaim: reclaimQueued,
-    getById: getQueuedById,
     clear: clearQueued,
   } = useChatMessageQueue({
     agentId: resolvedAgentId,
@@ -1372,13 +1365,9 @@ function ChatPageInner() {
         dockOpen={dockOpen}
         openTabs={openTabs}
         activeTabId={activeTabId}
-        resolvedAgentId={resolvedAgentId}
-        activeThreadId={activeThreadId}
-        scopeIdentity={toolScopeIdentity}
         openToolUiPanel={openToolUiTab}
         closeToolUiPanel={closeToolUiPanel}
         focusToolUiPanel={focusToolUiTab}
-        registerToolUiBinding={registerToolUiBinding}
       >
         {chatHistoryRail
           ? createPortal(chatSidebarPanel, chatHistoryRail)
@@ -1840,41 +1829,11 @@ function ChatPageInner() {
             ) : null}
             <ChatInput
               ref={chatInputRef}
-              beginSubmission={beginSubmission}
-              onSend={async (text, attachments, lease) => {
-                const ok = wrappedHandleSend(text, attachments);
-                if (!ok) {
-                  lease?.release();
-                  return { status: "rejected", reason: "blocked" };
-                }
-                return {
-                  status: "accepted",
-                  acceptedTarget: {
-                    agentId: resolvedAgentId ?? "",
-                    threadId: activeThreadId ?? "",
-                  },
-                };
-              }}
-              onQueue={async (item, lease) => {
-                const result = enqueueQueued(item);
-                if (result.status !== "accepted") lease?.release();
-                return result;
-              }}
+              onSend={wrappedHandleSend}
+              onQueue={enqueueQueued}
               queuedItems={displayQueuedItems}
               onRemoveQueued={removeQueued}
-              onReclaimQueued={async (id, commit, lease) => {
-                const item = getQueuedById(id);
-                if (!item) {
-                  lease?.release();
-                  return false;
-                }
-                if (!commit(item)) {
-                  lease?.release();
-                  return false;
-                }
-                reclaimQueued(id);
-                return true;
-              }}
+              onReclaimQueued={reclaimQueued}
               onSteerQueued={handleSteerQueued}
               onCancel={cancelStream}
               onNewChat={handleNewChat}

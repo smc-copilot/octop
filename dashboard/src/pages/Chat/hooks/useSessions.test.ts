@@ -131,53 +131,6 @@ describe("useSessions agent switch", () => {
     );
   });
 
-  it("keeps the newer pending placeholder when an older create resolves stale", async () => {
-    listMock.mockResolvedValue([]);
-    let resolveOld!: (value: { thread_id: string }) => void;
-    let resolveNew!: (value: { thread_id: string }) => void;
-    createMock
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveOld = resolve;
-          }),
-      )
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveNew = resolve;
-          }),
-      );
-    const { result } = renderHook(() => useSessions("agent-a"));
-    await waitFor(() => expect(result.current.loading).toBe(false));
-
-    let oldRequest!: ReturnType<typeof result.current.createSession>;
-    let newRequest!: ReturnType<typeof result.current.createSession>;
-    await act(async () => {
-      oldRequest = result.current.createSession({ isCurrent: () => false });
-      newRequest = result.current.createSession({ isCurrent: () => true });
-    });
-    expect(
-      result.current.sessions.filter((session) => session.id === "__pending__"),
-    ).toHaveLength(2);
-
-    await act(async () => {
-      resolveOld({ thread_id: "thread-old" });
-      await oldRequest.resolvedId;
-    });
-    expect(result.current.sessions.map((session) => session.id)).toEqual([
-      "__pending__",
-    ]);
-
-    await act(async () => {
-      resolveNew({ thread_id: "thread-new" });
-      await expect(newRequest.resolvedId).resolves.toBe("thread-new");
-    });
-    expect(result.current.sessions.map((session) => session.id)).toEqual([
-      "thread-new",
-    ]);
-  });
-
   it("ensureThreadInList returns unknown on probe network errors", async () => {
     listMock
       .mockResolvedValueOnce([]) // initial fetch for agent

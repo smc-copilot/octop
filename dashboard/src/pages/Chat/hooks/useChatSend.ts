@@ -11,7 +11,6 @@ import type { HitlSessionPolicy } from "../utils/hitlSessionPolicy";
 import * as chatStore from "./chatStore";
 import { EMPTY_CHAT_SESSION_KEY, PENDING_THREAD_ID } from "../constants";
 import { message } from "@/utils/antdMessage";
-import { getAuthSessionEpoch, isAuthSessionCurrent } from "../../../api/authSession";
 
 import {
   buildComposerContext,
@@ -68,24 +67,6 @@ export type ChatSendOverrides = {
   agentId?: string | null;
   conversationMode?: "ask" | "plan" | "craft";
   hitlPolicy?: HitlSessionPolicy;
-  /** Optional lease from ChatInput beginSubmission. */
-  submissionLease?: ChatSubmissionLease;
-};
-
-/** Composer/agent/thread identity captured when a submit starts. */
-export type ChatSubmissionOrigin = {
-  agentId: string;
-  threadId: string | null;
-};
-
-/** Abortable ownership token for an in-flight composer submit. */
-export type ChatSubmissionLease = {
-  origin: ChatSubmissionOrigin;
-  authEpoch: number;
-  signal: AbortSignal;
-  isCurrent: () => boolean;
-  release: () => void;
-  abort: () => void;
 };
 
 export function useChatSend({
@@ -320,28 +301,5 @@ export function useChatSend({
       window.removeEventListener("octop:pending-chat-message", handler);
   }, [handleSend, activeThreadId, onAutoRecordingStarted, t]);
 
-  const beginSubmission = useCallback(
-    (origin: ChatSubmissionOrigin): ChatSubmissionLease | null => {
-      if (!origin.agentId.trim()) return null;
-      const controller = new AbortController();
-      const authEpoch = getAuthSessionEpoch();
-      let released = false;
-      const release = () => {
-        if (released) return;
-        released = true;
-        controller.abort();
-      };
-      return {
-        origin: { agentId: origin.agentId, threadId: origin.threadId },
-        authEpoch,
-        signal: controller.signal,
-        isCurrent: () => !released && isAuthSessionCurrent(authEpoch),
-        release,
-        abort: release,
-      };
-    },
-    [],
-  );
-
-  return { handleSend, beginSubmission };
+  return { handleSend };
 }

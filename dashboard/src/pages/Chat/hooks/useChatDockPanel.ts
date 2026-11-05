@@ -1,12 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { PanelMode } from "../../../components/BrowserWorkspace";
 import {
   canonicalizeDockFilePath,
@@ -17,14 +9,6 @@ import {
 import type { KnowledgeCitation } from "../../../utils/parseKnowledgeCitations";
 import { dockKnowledgeTabId } from "../utils/dockKnowledgeTabId";
 import { dockToolUiTabId } from "../utils/dockToolUiTabId";
-import type {
-  PluginJson,
-  ToolRenderContext,
-} from "../../../plugins/toolRenderers/types";
-import {
-  getAuthSessionEpoch,
-  subscribeAuthSession,
-} from "../../../api/authSession";
 import { usePanelResize, type PanelSizes } from "./usePanelResize";
 
 const PANEL_MODE_KEY = "octop:chat-dock:mode";
@@ -52,17 +36,7 @@ export type DockTab =
       callId: string;
       title?: string;
       toolName?: string;
-      pluginId?: string;
-      state?: PluginJson;
-      scopeIdentity?: object;
-      activation: ToolUiActivation;
-      returnFocus?: () => void;
     };
-
-export interface ToolUiActivation {
-  id: number;
-  active: boolean;
-}
 
 export type DockTabId = DockTab["id"];
 
@@ -138,105 +112,11 @@ function fallbackActiveId(
 /**
  * Shared chat dock with tabbed file list / file viewers / browser / terminal.
  */
-export function useChatDockPanel(
-  isMobile: boolean,
-  agentId?: string | null,
-  threadId?: string | null,
-) {
+export function useChatDockPanel(isMobile: boolean, agentId?: string | null) {
   const [dockOpen, setDockOpen] = useState(false);
   const [dockMode, setDockMode] = useState<PanelMode>(loadPanelMode);
   const [openTabs, setOpenTabs] = useState<DockTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<DockTabId | null>(null);
-  const authEpoch = useSyncExternalStore(
-    subscribeAuthSession,
-    getAuthSessionEpoch,
-    getAuthSessionEpoch,
-  );
-  // These values intentionally invalidate an otherwise opaque identity token.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const toolScopeIdentity = useMemo(() => ({}), [agentId, threadId, authEpoch]);
-  const visibleOpenTabs = openTabs.filter(
-    (tab) => tab.kind !== "toolUi" || tab.scopeIdentity === toolScopeIdentity,
-  );
-  const openTabsRef = useRef(visibleOpenTabs);
-  const activeTabIdRef = useRef(activeTabId);
-  const nextToolActivationId = useRef(0);
-  const pendingToolFocus = useRef<(() => void) | undefined>(undefined);
-  const toolBindingsRef = useRef(new Map<string, Map<object, () => void>>());
-  openTabsRef.current = visibleOpenTabs;
-  activeTabIdRef.current = activeTabId;
-
-  const deactivateActiveToolUi = useCallback(() => {
-    const id = activeTabIdRef.current;
-    const tab = openTabsRef.current.find((item) => item.id === id);
-    if (tab?.kind === "toolUi") {
-      tab.activation.active = false;
-      for (const deactivate of toolBindingsRef.current
-        .get(tab.callId)
-        ?.values() ?? []) {
-        deactivate();
-      }
-    }
-  }, []);
-  const registerToolUiBinding = useCallback(
-    (callId: string, lease: object, deactivate: () => void) => {
-      const bindings = toolBindingsRef.current.get(callId) ?? new Map();
-      bindings.set(lease, deactivate);
-      toolBindingsRef.current.set(callId, bindings);
-      return () => {
-        const current = toolBindingsRef.current.get(callId);
-        current?.delete(lease);
-        if (current?.size === 0) toolBindingsRef.current.delete(callId);
-      };
-    },
-    [],
-  );
-  const deactivateToolUiBindings = useCallback((callId: string) => {
-    for (const deactivate of toolBindingsRef.current.get(callId)?.values() ??
-      []) {
-      deactivate();
-    }
-  }, []);
-
-  useLayoutEffect(() => {
-    const focus = pendingToolFocus.current;
-    if (!focus) return;
-    pendingToolFocus.current = undefined;
-    focus();
-  }, [openTabs, activeTabId, dockOpen]);
-
-  useEffect(
-    () =>
-      subscribeAuthSession(() => {
-        for (const tab of openTabsRef.current) {
-          if (tab.kind === "toolUi") tab.activation.active = false;
-        }
-        pendingToolFocus.current = undefined;
-      }),
-    [],
-  );
-
-  useLayoutEffect(() => {
-    const stale = openTabs.filter(
-      (tab) => tab.kind === "toolUi" && tab.scopeIdentity !== toolScopeIdentity,
-    );
-    if (!stale.length) return;
-    for (const tab of stale) {
-      if (tab.kind === "toolUi") tab.activation.active = false;
-    }
-    const nextTabs = openTabs.filter(
-      (tab) => tab.kind !== "toolUi" || tab.scopeIdentity === toolScopeIdentity,
-    );
-    if (stale.some((tab) => tab.id === activeTabId)) {
-      const nextActiveId = nextTabs.some((tab) => tab.id === "files")
-        ? "files"
-        : nextTabs[0]?.id ?? null;
-      activeTabIdRef.current = nextActiveId;
-      setActiveTabId(nextActiveId);
-      if (!nextTabs.length) setDockOpen(false);
-    }
-    setOpenTabs(nextTabs);
-  }, [openTabs, toolScopeIdentity, activeTabId]);
   const { panelSizes, isResizing, handleResizeStart } = usePanelResize(
     loadPanelSizes(),
     persistPanelSizes,
@@ -249,11 +129,10 @@ export function useChatDockPanel(
     const prev = prevAgentIdRef.current;
     prevAgentIdRef.current = agentId;
     if (prev == null || agentId == null || prev === agentId) return;
-    deactivateActiveToolUi();
     setDockOpen(false);
     setOpenTabs([]);
     setActiveTabId(null);
-  }, [agentId, deactivateActiveToolUi]);
+  }, [agentId]);
 
   const openDock = useCallback(() => {
     setDockOpen(true);
@@ -263,14 +142,6 @@ export function useChatDockPanel(
   }, [isMobile]);
 
   const handleClose = useCallback(() => {
-    const active = openTabsRef.current.find(
-      (tab) => tab.id === activeTabIdRef.current,
-    );
-    if (active?.kind === "toolUi") {
-      deactivateActiveToolUi();
-      deactivateToolUiBindings(active.callId);
-      pendingToolFocus.current = active.returnFocus;
-    }
     setDockOpen(false);
     // Closing the dock restores tool UIs to the message stream.
     setOpenTabs((prev) => {
@@ -282,18 +153,16 @@ export function useChatDockPanel(
       });
       return next;
     });
-  }, [deactivateActiveToolUi, deactivateToolUiBindings]);
+  }, []);
 
   const openFileList = useCallback(() => {
-    deactivateActiveToolUi();
     setOpenTabs((prev) => ensureFilesTab(prev));
     setActiveTabId("files");
     openDock();
-  }, [deactivateActiveToolUi, openDock]);
+  }, [openDock]);
 
   const openFileAt = useCallback(
     (path?: string | null, fileAgentId?: string | null) => {
-      deactivateActiveToolUi();
       if (!path?.trim()) {
         openFileList();
         return;
@@ -326,38 +195,35 @@ export function useChatDockPanel(
       setActiveTabId(id);
       openDock();
     },
-    [agentId, openDock, openFileList, deactivateActiveToolUi],
+    [agentId, openDock, openFileList],
   );
 
   const openWorkspaceTab = useCallback(() => {
-    deactivateActiveToolUi();
     setOpenTabs((prev) => {
       if (prev.some((t) => t.id === "workspace")) return prev;
       return [...prev, { id: "workspace", kind: "workspace" }];
     });
     setActiveTabId("workspace");
     openDock();
-  }, [deactivateActiveToolUi, openDock]);
+  }, [openDock]);
 
   const openBrowserTab = useCallback(() => {
-    deactivateActiveToolUi();
     setOpenTabs((prev) => {
       if (prev.some((t) => t.id === "browser")) return prev;
       return [...prev, { id: "browser", kind: "browser" }];
     });
     setActiveTabId("browser");
     openDock();
-  }, [deactivateActiveToolUi, openDock]);
+  }, [openDock]);
 
   const openTerminalTab = useCallback(() => {
-    deactivateActiveToolUi();
     setOpenTabs((prev) => {
       if (prev.some((t) => t.id === "terminal")) return prev;
       return [...prev, { id: "terminal", kind: "terminal" }];
     });
     setActiveTabId("terminal");
     openDock();
-  }, [deactivateActiveToolUi, openDock]);
+  }, [openDock]);
 
   const openKnowledgeCitation = useCallback(
     (citation: KnowledgeCitation) => {
@@ -365,7 +231,6 @@ export function useChatDockPanel(
       const docId = citation.docId?.trim();
       if (!kbId || !docId) return;
       const id = dockKnowledgeTabId(kbId, docId);
-      deactivateActiveToolUi();
       setOpenTabs((prev) => {
         const existing = prev.find((t) => t.id === id);
         if (existing?.kind === "knowledge") {
@@ -377,95 +242,45 @@ export function useChatDockPanel(
       setActiveTabId(id);
       openDock();
     },
-    [openDock, deactivateActiveToolUi],
+    [openDock],
   );
 
   const openToolUiTab = useCallback(
-    (opts: {
-      callId: string;
-      title?: string;
-      toolName?: string;
-      pluginId?: string;
-      context?: ToolRenderContext;
-      state?: PluginJson;
-      scopeIdentity?: object;
-      returnFocus?: () => void;
-    }) => {
+    (opts: { callId: string; title?: string; toolName?: string }) => {
       const callId = opts.callId?.trim();
       if (!callId) return;
-      deactivateActiveToolUi();
-      deactivateToolUiBindings(callId);
-      const activation: ToolUiActivation = {
-        id: ++nextToolActivationId.current,
-        active: true,
-      };
       const id = dockToolUiTabId(callId);
       setOpenTabs((prev) => {
-        const existing = prev.find((tab) => tab.id === id);
-        const nextTab = {
-          id,
-          kind: "toolUi" as const,
-          callId,
-          title:
-            opts.title ??
-            (existing?.kind === "toolUi" ? existing.title : undefined),
-          toolName:
-            opts.toolName ??
-            (existing?.kind === "toolUi" ? existing.toolName : undefined),
-          pluginId: opts.pluginId,
-          ...(Object.prototype.hasOwnProperty.call(opts, "state")
-            ? { state: opts.state }
-            : {}),
-          scopeIdentity: opts.scopeIdentity ?? toolScopeIdentity,
-          activation,
-          returnFocus:
-            opts.returnFocus ??
-            (existing?.kind === "toolUi" ? existing.returnFocus : undefined),
-        };
-        return existing
-          ? prev.map((tab) => (tab.id === id ? nextTab : tab))
-          : [...prev, nextTab];
+        if (prev.some((t) => t.id === id)) return prev;
+        return [
+          ...prev,
+          {
+            id,
+            kind: "toolUi" as const,
+            callId,
+            title: opts.title,
+            toolName: opts.toolName,
+          },
+        ];
       });
       setActiveTabId(id);
       openDock();
     },
-    [
-      deactivateActiveToolUi,
-      deactivateToolUiBindings,
-      openDock,
-      toolScopeIdentity,
-    ],
+    [openDock],
   );
 
   const focusToolUiTab = useCallback(
     (callId: string) => {
       const id = dockToolUiTabId(callId);
-      const entering = activeTabIdRef.current !== id || !dockOpen;
-      if (entering) {
-        deactivateActiveToolUi();
-        deactivateToolUiBindings(callId);
-      }
-      const target = openTabsRef.current.find((tab) => tab.id === id);
-      if (target?.kind === "toolUi" && !target.activation.active) {
-        const activation = { id: ++nextToolActivationId.current, active: true };
-        setOpenTabs((prev) =>
-          prev.map((tab) =>
-            tab.id === id && tab.kind === "toolUi"
-              ? { ...tab, activation }
-              : tab,
-          ),
-        );
-      }
       setActiveTabId(id);
       openDock();
     },
-    [openDock, deactivateActiveToolUi, deactivateToolUiBindings, dockOpen],
+    [openDock],
   );
 
   /** Toggle dock open/closed around a dedicated tab. */
   const toggleDockTab = useCallback(
     (tab: Extract<DockTab, { kind: "browser" | "terminal" | "workspace" }>) => {
-      deactivateActiveToolUi();
       setDockOpen((prevOpen) => {
         if (prevOpen && activeTabId === tab.id) {
           return false;
@@ -481,7 +296,7 @@ export function useChatDockPanel(
         setDockMode("bottom");
       }
     },
-    [activeTabId, isMobile, deactivateActiveToolUi],
+    [activeTabId, isMobile],
   );
 
   const toggleWorkspacePanel = useCallback(() => {
@@ -496,65 +311,24 @@ export function useChatDockPanel(
     toggleDockTab({ id: "terminal", kind: "terminal" });
   }, [toggleDockTab]);
 
-  const closeTab = useCallback(
-    (id: DockTabId) => {
-      const closing = openTabsRef.current.find((tab) => tab.id === id);
-      const wasActive = activeTabIdRef.current === id;
-      if (wasActive && closing?.kind === "toolUi") {
-        deactivateActiveToolUi();
-        pendingToolFocus.current = closing.returnFocus;
-      }
-      const next = openTabsRef.current.filter((tab) => tab.id !== id);
-      const nextActiveId = fallbackActiveId(next, id, activeTabIdRef.current);
-      const fallback = next.find((tab) => tab.id === nextActiveId);
-      const fallbackActivation =
-        fallback?.kind === "toolUi" && !fallback.activation.active
-          ? { id: ++nextToolActivationId.current, active: true }
-          : undefined;
-      if (fallback?.kind === "toolUi" && fallbackActivation) {
-        deactivateToolUiBindings(fallback.callId);
-      }
-      const activatedNext = fallbackActivation
-        ? next.map((tab) =>
-            tab.id === nextActiveId && tab.kind === "toolUi"
-              ? { ...tab, activation: fallbackActivation }
-              : tab,
-          )
-        : next;
-      openTabsRef.current = activatedNext;
-      activeTabIdRef.current = nextActiveId;
-      setOpenTabs(activatedNext);
-      setActiveTabId(nextActiveId);
-      if (next.length === 0) setDockOpen(false);
-    },
-    [deactivateActiveToolUi, deactivateToolUiBindings],
-  );
-
-  const setActiveTab = useCallback(
-    (id: DockTabId) => {
-      const target = openTabsRef.current.find((tab) => tab.id === id);
-      const entering = activeTabIdRef.current !== id || !dockOpen;
-      if (entering) {
-        deactivateActiveToolUi();
-        if (target?.kind === "toolUi") {
-          deactivateToolUiBindings(target.callId);
+  const closeTab = useCallback((id: DockTabId) => {
+    setOpenTabs((prev) => {
+      const next = prev.filter((t) => t.id !== id);
+      setActiveTabId((current) => {
+        const nextActive = fallbackActiveId(next, id, current);
+        if (next.length === 0) {
+          setDockOpen(false);
         }
-      }
-      if (target?.kind === "toolUi" && target.activation.active === false) {
-        const activation = { id: ++nextToolActivationId.current, active: true };
-        setOpenTabs((prev) =>
-          prev.map((tab) =>
-            tab.id === id && tab.kind === "toolUi"
-              ? { ...tab, activation }
-              : tab,
-          ),
-        );
-      }
-      setActiveTabId(id);
-      setDockOpen(true);
-    },
-    [deactivateActiveToolUi, deactivateToolUiBindings, dockOpen],
-  );
+        return nextActive;
+      });
+      return next;
+    });
+  }, []);
+
+  const setActiveTab = useCallback((id: DockTabId) => {
+    setActiveTabId(id);
+    setDockOpen(true);
+  }, []);
 
   const handleModeChange = useCallback(
     (mode: PanelMode) => {
@@ -576,17 +350,14 @@ export function useChatDockPanel(
   }, [dockMode]);
 
   const activeTab =
-    visibleOpenTabs.find((t) => t.id === activeTabId) ??
-    visibleOpenTabs[0] ??
-    null;
+    openTabs.find((t) => t.id === activeTabId) ?? openTabs[0] ?? null;
   const filePath = activeTab?.kind === "file" ? activeTab.path : null;
 
   return {
     dockOpen,
     dockMode,
     filePath,
-    openTabs: visibleOpenTabs,
-    toolScopeIdentity,
+    openTabs,
     activeTabId,
     activeTab,
     panelSizes,
@@ -607,6 +378,5 @@ export function useChatDockPanel(
     focusToolUiTab,
     closeTab,
     setActiveTab,
-    registerToolUiBinding,
   };
 }

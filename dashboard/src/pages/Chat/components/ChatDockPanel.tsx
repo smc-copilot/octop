@@ -226,6 +226,10 @@ const ChatDockPanel: React.FC<ChatDockPanelProps> = ({
   const [mountedKnowledgeTabs, setMountedKnowledgeTabs] = useState<
     Extract<DockTab, { kind: "knowledge" }>[]
   >(() => openTabs.filter((tab) => tab.kind === "knowledge"));
+  const [mountedToolUiCallIds, setMountedToolUiCallIds] = useState<string[]>(
+    () =>
+      openTabs.filter((tab) => tab.kind === "toolUi").map((tab) => tab.callId),
+  );
   const [fileActionsById, setFileActionsById] = useState<
     Record<string, ReactNode>
   >({});
@@ -263,6 +267,9 @@ const ChatDockPanel: React.FC<ChatDockPanelProps> = ({
         )
         .map((tab) => [tab.id, tab]),
     );
+    const openToolUiCallIds = new Set(
+      openTabs.filter((tab) => tab.kind === "toolUi").map((tab) => tab.callId),
+    );
     setMountedFileTabs((prev) => {
       const next = prev
         .filter((tab) => openFileById.has(tab.id))
@@ -286,6 +293,17 @@ const ChatDockPanel: React.FC<ChatDockPanelProps> = ({
       for (const tab of openKnowledgeById.values()) {
         if (!next.some((row) => row.id === tab.id)) {
           next.push(tab);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    setMountedToolUiCallIds((prev) => {
+      const next = prev.filter((callId) => openToolUiCallIds.has(callId));
+      let changed = next.length !== prev.length;
+      for (const callId of openToolUiCallIds) {
+        if (!next.includes(callId)) {
+          next.push(callId);
           changed = true;
         }
       }
@@ -367,8 +385,6 @@ const ChatDockPanel: React.FC<ChatDockPanelProps> = ({
   const activeTab =
     openTabs.find((tab) => tab.id === activeTabId) ?? openTabs[0] ?? null;
   const terminalVisible = surfaceVisible && activeTab?.kind === "terminal";
-  const activeToolUiTab =
-    surfaceVisible && activeTab?.kind === "toolUi" ? activeTab : null;
 
   const tabBar = (
     <div className={styles.dockTabBar}>
@@ -620,20 +636,25 @@ const ChatDockPanel: React.FC<ChatDockPanelProps> = ({
           </div>
         )}
 
-        {activeToolUiTab && (
-          <div
-            key={`${activeToolUiTab.callId}:${activeToolUiTab.activation.id}`}
-            className={styles.dockTabBody}
-            style={{ display: "flex" }}
-          >
-            <ChatDockToolUiContent
-              threadId={threadId}
-              callId={activeToolUiTab.callId}
-              agentId={agentId}
-              isStreamingTurn={isStreamingTurn}
-            />
-          </div>
-        )}
+        {mountedToolUiCallIds.map((callId) => {
+          const isActive =
+            activeTab?.kind === "toolUi" && activeTab.callId === callId;
+          return (
+            <div
+              key={callId}
+              className={styles.dockTabBody}
+              hidden={!isActive}
+              style={{ display: isActive ? "flex" : "none" }}
+            >
+              <ChatDockToolUiContent
+                threadId={threadId}
+                callId={callId}
+                agentId={agentId}
+                isStreamingTurn={isStreamingTurn}
+              />
+            </div>
+          );
+        })}
       </div>
     </ChatDockPanelShell>
   );

@@ -1,5 +1,4 @@
 export { DefaultToolRenderer } from "./builtin/DefaultToolRenderer";
-export { PluginSurface } from "./PluginSurface";
 export {
   builtinPluginHost,
   createPluginUiHost,
@@ -32,12 +31,6 @@ export { useToolRendererVersion } from "./useToolRendererVersion";
 export type {
   OctopPluginUIHost,
   ParsedToolOutput,
-  PluginReadinessState,
-  PluginSurfaceComponent,
-  PluginSurfaceContext,
-  PluginSurfaceLocation,
-  PluginSurfaceName,
-  PluginSurfaceProps,
   PluginUiModule,
   ToolRenderProps,
   ToolRendererRegistration,

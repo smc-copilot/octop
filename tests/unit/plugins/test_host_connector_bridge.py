@@ -33,7 +33,6 @@ def _services(
 
 
 @pytest.mark.asyncio
-# @lat: [[tests#Mail expert connector#Plugin host read bridge isolation]]
 async def test_bridge_denies_write_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     host = PluginHost(lambda: _services())
     facade = host.bind("mail-assistant", "1.0.0")

@@ -55,7 +55,6 @@ export function DefaultToolRenderer({
   isStreaming,
   hideMediaPreview = false,
   onAcpPermissionSelect,
-  onSendMessage,
   agentId = null,
   textFallback,
   data,
@@ -241,9 +240,7 @@ export function DefaultToolRenderer({
               )}
             </div>
           )}
-          {acpPermission &&
-            (onSendMessage || onAcpPermissionSelect) &&
-            !isStreaming && (
+          {acpPermission && onAcpPermissionSelect && !isStreaming && (
             <div className={styles.inlineToolSection}>
               <div className={styles.inlineToolSectionLabel}>
                 {t("acp.chatPermissionTitle", "外部 Agent 需要权限确认")}
@@ -256,7 +253,7 @@ export function DefaultToolRenderer({
                     size="small"
                     type="default"
                     onClick={() =>
-                      (onSendMessage || onAcpPermissionSelect)?.(
+                      onAcpPermissionSelect(
                         buildAcpPermissionRespondMessage(
                           acpPermission.runner,
                           opt.id,

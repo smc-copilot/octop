@@ -3,7 +3,6 @@ import {
   useRef,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   forwardRef,
   useImperativeHandle,
@@ -59,16 +58,7 @@ import {
 import type {
   EnqueueChatItemInput,
   QueuedChatItem,
-  SubmitResult,
 } from "../hooks/useChatMessageQueue";
-import type {
-  ChatSubmissionLease,
-  ChatSubmissionOrigin,
-} from "../hooks/useChatSend";
-import {
-  getAuthSessionEpoch,
-  isAuthSessionCurrent,
-} from "../../../api/authSession";
 import type { HitlSessionPolicy } from "../utils/hitlSessionPolicy";
 import styles from "../index.module.less";
 
@@ -80,30 +70,14 @@ export interface ChatInputHandle {
 }
 
 interface ChatInputProps {
-  onSend: (
-    text: string,
-    attachments?: ChatAttachment[],
-    lease?: ChatSubmissionLease,
-  ) => Promise<SubmitResult>;
-  beginSubmission?: (
-    origin: ChatSubmissionOrigin,
-  ) => ChatSubmissionLease | null;
-  onAcceptedTarget?: (target: { agentId: string; threadId: string }) => void;
+  onSend: (text: string, attachments?: ChatAttachment[]) => void;
   /** Queue a message while the current turn is still streaming. */
-  onQueue?: (
-    item: EnqueueChatItemInput,
-    lease?: ChatSubmissionLease,
-  ) => Promise<SubmitResult>;
+  onQueue?: (item: EnqueueChatItemInput) => "ok" | "empty" | "full";
   queuedItems?: QueuedChatItem[];
   onRemoveQueued?: (id: string) => void;
-  onReclaimQueued?: (
-    id: string,
-    commit: (item: QueuedChatItem) => boolean,
-    lease?: ChatSubmissionLease,
-  ) => Promise<boolean>;
+  onReclaimQueued?: (id: string) => QueuedChatItem | null;
   /** Commit a local queued draft as a mid-turn steer (chip-row ↑ Steer). */
   onSteerQueued?: (id: string) => void;
-  onOpenQueuedTarget?: (target: { agentId: string; threadId: string }) => void;
   onCancel: () => void;
   onNewChat: () => void;
   onUserInput?: () => void;
@@ -171,14 +145,11 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
   function ChatInput(
     {
       onSend,
-      beginSubmission,
-      onAcceptedTarget,
       onQueue,
       queuedItems = [],
       onRemoveQueued,
       onReclaimQueued,
       onSteerQueued,
-      onOpenQueuedTarget,
       onCancel,
       onNewChat,
       onUserInput,
@@ -252,45 +223,9 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       !isPwaDisplay() &&
       (isMobile || needsComposerVisualViewportFix());
     useKeepInVisualViewport(shellRef, keepComposerInView);
-    const [text, setTextState] = useState(
+    const [text, setText] = useState(
       () => initialText || readInputDraft(agentId, threadId),
     );
-    const draftRevisionRef = useRef(0);
-    const currentOriginRef = useRef({
-      agentId: agentId ?? "",
-      threadId: threadId ?? null,
-    });
-    currentOriginRef.current = {
-      agentId: agentId ?? "",
-      threadId: threadId ?? null,
-    };
-    const mountedRef = useRef(false);
-    const submissionLeaseRef = useRef<ChatSubmissionLease | null>(null);
-    const submissionOwnerRef = useRef<object | null>(null);
-    const [submissionPending, setSubmissionPending] = useState(false);
-    const submissionPendingRef = useRef(false);
-    useEffect(() => {
-      mountedRef.current = true;
-      return () => {
-        mountedRef.current = false;
-        submissionLeaseRef.current?.abort();
-      };
-    }, []);
-    useLayoutEffect(() => {
-      const lease = submissionLeaseRef.current;
-      if (
-        lease &&
-        (lease.origin.agentId !== (agentId ?? "") ||
-          lease.origin.threadId !== (threadId ?? null))
-      ) {
-        lease.abort();
-      }
-    }, [agentId, threadId]);
-    const setText = useCallback((value: string) => {
-      draftRevisionRef.current += 1;
-      textRef.current = value;
-      setTextState(value);
-    }, []);
     const [polishing, setPolishing] = useState(false);
     // Track whether the user has manually edited the text after a prefill.
     // Once they start editing, we must not overwrite their input with a new
@@ -300,13 +235,10 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
     // (parent may still hold the prefill string in a ref across the next render).
     const ignoreInitialTextRef = useRef<string | null>(null);
 
-    const setComposerText = useCallback(
-      (value: string) => {
-        userHasEditedRef.current = true;
-        setText(value);
-      },
-      [setText],
-    );
+    const setComposerText = useCallback((value: string) => {
+      userHasEditedRef.current = true;
+      setText(value);
+    }, []);
 
     const textRef = useRef(text);
     useEffect(() => {
@@ -324,7 +256,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
         userHasEditedRef.current = true;
         onUserInput?.();
       },
-      [onUserInput, setText],
+      [onUserInput],
     );
     const {
       recording,
@@ -359,14 +291,6 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       handleDragOver,
       handleDrop,
     } = useChatAttachments(agentId);
-    const attachmentSnapshotRef = useRef(JSON.stringify(attachments));
-    useEffect(() => {
-      const snapshot = JSON.stringify(attachments);
-      if (snapshot !== attachmentSnapshotRef.current) {
-        attachmentSnapshotRef.current = snapshot;
-        draftRevisionRef.current += 1;
-      }
-    }, [attachments]);
 
     // Expose an imperative handle so the parent can push a new prefill without
     // triggering a prop change that would cause a re-render cascade.
@@ -416,7 +340,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
           el.setSelectionRange(el.value.length, el.value.length);
         },
       }),
-      [clearAttachments, restoreAttachments, setText],
+      [clearAttachments, restoreAttachments],
     );
 
     // When the parent passes a non-empty initialText after mount (e.g. navigated
@@ -455,7 +379,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
           }
         }, 50);
       }
-    }, [initialText, setText]);
+    }, [initialText]);
 
     // Restore per-thread draft when switching conversations or remounting.
     useEffect(() => {
@@ -472,14 +396,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       } else {
         clearAttachments();
       }
-    }, [
-      agentId,
-      threadId,
-      initialText,
-      clearAttachments,
-      restoreAttachments,
-      setText,
-    ]);
+    }, [agentId, threadId, initialText, clearAttachments, restoreAttachments]);
 
     useEffect(() => {
       return onSteerRestore((event) => {
@@ -534,16 +451,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
         }
         apply();
       });
-    }, [
-      threadId,
-      text,
-      attachments,
-      t,
-      antMessage,
-      modal,
-      restoreAttachments,
-      setText,
-    ]);
+    }, [threadId, text, attachments, t, antMessage, modal, restoreAttachments]);
 
     // Persist draft while typing so leaving /chat and returning keeps content.
     useEffect(() => {
@@ -553,7 +461,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       }, 250);
       return () => window.clearTimeout(timer);
     }, [text, agentId, threadId]);
-    const submitRef = useRef<(textOverride?: string) => void>(() => {});
+    const submitRef = useRef<() => void>(() => {});
 
     const MIN_TEXTAREA_HEIGHT = isMobile ? 42 : 78;
 
@@ -594,6 +502,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       agentId,
       selectedConnectors,
       onConnectorsChange,
+      onSend,
       onNewChat,
       onCancel,
       isStreaming,
@@ -627,7 +536,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
           el.setSelectionRange(next.length, next.length);
         });
       },
-      [text, skillTokenRefs, setText],
+      [text, skillTokenRefs],
     );
 
     const selectedSkillSlugs = useMemo(
@@ -647,7 +556,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
           el.setSelectionRange(next.cursor, next.cursor);
         });
       },
-      [text, setText],
+      [text],
     );
 
     const insertSubagentMention = useCallback(
@@ -662,7 +571,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
           el.setSelectionRange(next.cursor, next.cursor);
         });
       },
-      [text, setText],
+      [text],
     );
 
     const resetComposerAfterSubmit = useCallback(
@@ -692,180 +601,83 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
         agentId,
         threadId,
         clearAttachments,
-        setText,
         MIN_TEXTAREA_HEIGHT,
         initialText,
         onComposerCleared,
       ],
     );
 
-    const submitMessage = useCallback(
-      async (textOverride?: string) => {
-        if (submissionPendingRef.current) return;
-        const sourceText = textOverride ?? text;
-        const trimmed = sourceText.trim();
-        if ((!trimmed && attachments.length === 0) || disabled) return;
-        const wireText = materializeSkillSlashes(
-          trimmed,
-          skillTokenRefs,
-        ).trim();
-        const slashItem = matchSlashCommand(wireText);
-        if (slashItem && slashItem.spec.client_action !== "none") {
-          // Slash actions are never queued — run immediately or leave input alone.
-          if (isStreaming || holdSend) return;
-          runSlashCommand(slashItem);
-          return;
-        }
-        const origin = { agentId: agentId ?? "", threadId: threadId ?? null };
-        const lease = beginSubmission?.(origin);
-        if (beginSubmission && !lease) return;
-        if (lease && !lease.isCurrent()) {
-          lease.release();
-          return;
-        }
-        const owner = lease ?? {};
-        const authEpoch = lease?.authEpoch ?? getAuthSessionEpoch();
-        const submittedRevision = draftRevisionRef.current;
-        const ta = textareaRef.current;
-        const prevHeight = ta ? ta.getBoundingClientRect().height : 0;
-        submissionOwnerRef.current = owner;
-        submissionLeaseRef.current = lease ?? null;
-        submissionPendingRef.current = true;
-        setSubmissionPending(true);
-        const releasePendingOnAbort = () => {
-          if (submissionOwnerRef.current !== owner) return;
-          submissionOwnerRef.current = null;
-          submissionLeaseRef.current = null;
-          submissionPendingRef.current = false;
-          if (mountedRef.current) setSubmissionPending(false);
-        };
-        lease?.signal.addEventListener("abort", releasePendingOnAbort, {
-          once: true,
-        });
-        try {
-          const result =
-            (isStreaming && !isTeam) || holdSend
-              ? await onQueue?.(
-                  {
-                    text: wireText,
-                    attachments:
-                      attachments.length > 0 ? attachments : undefined,
-                    composerContext: buildComposerContext({
-                      skills: selectedSkillSlugs,
-                      connectors: selectedConnectors,
-                      knowledgeBaseIds: selectedKnowledgeBaseIds,
-                      selectedModel,
-                      reasoningMode,
-                      reasoningEffort,
-                    }),
-                    modelRef: resolveTurnModelRef(selectedModel, defaultModel),
-                  },
-                  lease ?? undefined,
-                )
-              : await onSend(
-                  wireText,
-                  attachments.length > 0 ? attachments : undefined,
-                  lease ?? undefined,
-                );
-          if (
-            !mountedRef.current ||
-            !isAuthSessionCurrent(authEpoch) ||
-            currentOriginRef.current.agentId !== origin.agentId ||
-            currentOriginRef.current.threadId !== origin.threadId ||
-            (lease && !lease.isCurrent())
-          )
-            return;
-          if (
-            result?.status === "accepted" &&
-            submittedRevision === draftRevisionRef.current
-          ) {
-            resetComposerAfterSubmit(prevHeight, trimmed);
-            if (result.acceptedTarget)
-              onAcceptedTarget?.(result.acceptedTarget);
-          } else if (
-            result?.status === "rejected" &&
-            result.reason === "full"
-          ) {
-            antMessage.warning(t("chat.queue.full"));
-          } else if (
-            result?.status === "rejected" &&
-            result.reason !== "empty"
-          ) {
-            antMessage.warning(
-              t("chat.sendFailed", "发送未被接受，草稿已保留"),
-            );
-          }
-        } catch {
-          if (
-            mountedRef.current &&
-            isAuthSessionCurrent(authEpoch) &&
-            currentOriginRef.current.agentId === origin.agentId &&
-            currentOriginRef.current.threadId === origin.threadId &&
-            (!lease || lease.isCurrent())
-          )
-            antMessage.warning(
-              t("chat.sendFailed", "发送未被接受，草稿已保留"),
-            );
-        } finally {
-          lease?.signal.removeEventListener("abort", releasePendingOnAbort);
-          lease?.release();
-          if (submissionOwnerRef.current === owner) {
-            submissionOwnerRef.current = null;
-            submissionLeaseRef.current = null;
-            submissionPendingRef.current = false;
-            if (mountedRef.current) setSubmissionPending(false);
-          }
-        }
-      },
-      [
-        text,
-        attachments,
-        agentId,
-        threadId,
-        beginSubmission,
-        onSend,
-        onAcceptedTarget,
-        onQueue,
-        disabled,
-        isStreaming,
-        holdSend,
-        isTeam,
-        matchSlashCommand,
-        runSlashCommand,
-        resetComposerAfterSubmit,
-        selectedConnectors,
-        selectedKnowledgeBaseIds,
-        selectedSkillSlugs,
-        skillTokenRefs,
-        selectedModel,
-        reasoningMode,
-        reasoningEffort,
-        defaultModel,
-        antMessage,
-        t,
-      ],
-    );
+    const submitMessage = useCallback(() => {
+      const trimmed = text.trim();
+      if ((!trimmed && attachments.length === 0) || disabled) return;
+      const wireText = materializeSkillSlashes(trimmed, skillTokenRefs).trim();
+      const slashItem = matchSlashCommand(wireText);
+      if (slashItem && slashItem.spec.client_action !== "none") {
+        // Slash actions are never queued — run immediately or leave input alone.
+        if (isStreaming || holdSend) return;
+        runSlashCommand(slashItem);
+        return;
+      }
+      const ta = textareaRef.current;
+      const prevHeight = ta ? ta.getBoundingClientRect().height : 0;
 
-    submitRef.current = (textOverride) => void submitMessage(textOverride);
+      if ((isStreaming && !isTeam) || holdSend) {
+        if (!onQueue) return;
+        const result = onQueue({
+          text: wireText,
+          attachments: attachments.length > 0 ? attachments : undefined,
+          composerContext: buildComposerContext({
+            skills: selectedSkillSlugs,
+            connectors: selectedConnectors,
+            knowledgeBaseIds: selectedKnowledgeBaseIds,
+            selectedModel,
+            reasoningMode,
+            reasoningEffort,
+          }),
+          modelRef: resolveTurnModelRef(selectedModel, defaultModel),
+        });
+        if (result === "full") {
+          antMessage.warning(t("chat.queue.full"));
+          return;
+        }
+        if (result === "empty") return;
+        resetComposerAfterSubmit(prevHeight, trimmed);
+        return;
+      }
+
+      onSend(wireText, attachments.length > 0 ? attachments : undefined);
+      resetComposerAfterSubmit(prevHeight, trimmed);
+    }, [
+      text,
+      attachments,
+      onSend,
+      onQueue,
+      disabled,
+      isStreaming,
+      holdSend,
+      isTeam,
+      matchSlashCommand,
+      runSlashCommand,
+      resetComposerAfterSubmit,
+      selectedConnectors,
+      selectedKnowledgeBaseIds,
+      selectedSkillSlugs,
+      skillTokenRefs,
+      selectedModel,
+      reasoningMode,
+      reasoningEffort,
+      defaultModel,
+      t,
+    ]);
+
+    submitRef.current = submitMessage;
 
     const handleReclaimQueued = useCallback(
       (id: string) => {
         if (!onReclaimQueued) return;
-        let confirmedRevision: number | null = null;
-        let confirmedAuthEpoch = -1;
-        let confirmedOrigin: ChatSubmissionOrigin | null = null;
-        const commit = (item: QueuedChatItem) => {
-          if (
-            confirmedRevision === null ||
-            confirmedRevision !== draftRevisionRef.current ||
-            !isAuthSessionCurrent(confirmedAuthEpoch) ||
-            !confirmedOrigin ||
-            currentOriginRef.current.agentId !== confirmedOrigin.agentId ||
-            currentOriginRef.current.threadId !== confirmedOrigin.threadId ||
-            item.target.agentId !== confirmedOrigin.agentId ||
-            item.target.threadId !== confirmedOrigin.threadId
-          )
-            return false;
+        const apply = () => {
+          const item = onReclaimQueued(id);
+          if (!item) return;
           userHasEditedRef.current = true;
           const ctx = item.composerContext;
           const restoredText =
@@ -902,61 +714,6 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
               el.setSelectionRange(el.value.length, el.value.length);
             }
           }, 50);
-          return true;
-        };
-        const apply = async () => {
-          const origin = { agentId: agentId ?? "", threadId: threadId ?? null };
-          const lease = beginSubmission?.(origin);
-          if (beginSubmission && !lease) return;
-          if (lease && !lease.isCurrent()) {
-            lease.release();
-            return;
-          }
-          if (submissionPendingRef.current) {
-            lease?.release();
-            return;
-          }
-          const revision = draftRevisionRef.current;
-          const authEpoch = lease?.authEpoch ?? getAuthSessionEpoch();
-          confirmedRevision = revision;
-          confirmedAuthEpoch = authEpoch;
-          confirmedOrigin = origin;
-          const owner = lease ?? {};
-          submissionOwnerRef.current = owner;
-          submissionLeaseRef.current = lease ?? null;
-          submissionPendingRef.current = true;
-          setSubmissionPending(true);
-          const releasePendingOnAbort = () => {
-            if (submissionOwnerRef.current !== owner) return;
-            submissionOwnerRef.current = null;
-            submissionLeaseRef.current = null;
-            submissionPendingRef.current = false;
-            if (mountedRef.current) setSubmissionPending(false);
-          };
-          lease?.signal.addEventListener("abort", releasePendingOnAbort, {
-            once: true,
-          });
-          const leasedCommit = (item: QueuedChatItem) =>
-            (!lease || lease.isCurrent()) &&
-            mountedRef.current &&
-            isAuthSessionCurrent(authEpoch) &&
-            currentOriginRef.current.agentId === origin.agentId &&
-            currentOriginRef.current.threadId === origin.threadId &&
-            revision === draftRevisionRef.current &&
-            commit(item);
-          try {
-            if (!lease || lease.isCurrent())
-              await onReclaimQueued(id, leasedCommit, lease ?? undefined);
-          } finally {
-            lease?.signal.removeEventListener("abort", releasePendingOnAbort);
-            lease?.release();
-            if (submissionOwnerRef.current === owner) {
-              submissionOwnerRef.current = null;
-              submissionLeaseRef.current = null;
-              submissionPendingRef.current = false;
-              if (mountedRef.current) setSubmissionPending(false);
-            }
-          }
         };
 
         if (text.trim() || attachments.length > 0) {
@@ -973,13 +730,6 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       },
       [
         onReclaimQueued,
-        beginSubmission,
-        agentId,
-        threadId,
-        draftRevisionRef,
-        currentOriginRef,
-        modal,
-        setText,
         restoreAttachments,
         text,
         attachments.length,
@@ -1093,8 +843,6 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       holdSend,
       disabled,
       selectedModel,
-      antMessage,
-      setText,
       defaultModel,
       t,
     ]);
@@ -1125,14 +873,9 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
           {onRemoveQueued && onReclaimQueued && (
             <ChatQueuedMessages
               items={queuedItems}
-              displayTarget={{
-                agentId: agentId ?? "",
-                threadId: threadId ?? null,
-              }}
               onRemove={onRemoveQueued}
               onReclaim={handleReclaimQueued}
               onSteer={onSteerQueued}
-              onOpenTarget={onOpenQueuedTarget}
             />
           )}
           <ChatInputPreviewBar
@@ -1255,7 +998,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
             isStreaming={isStreaming || holdSend}
             isTeam={isTeam}
             disabled={disabled}
-            canSend={canSend && !submissionPending}
+            canSend={canSend}
             text={text}
             polishing={polishing}
             uploading={uploading}
@@ -1309,7 +1052,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
             onPolish={() => void handlePolish()}
             onToggleVoice={() => toggleVoice()}
             onCancel={onCancel}
-            onSubmit={() => void submitMessage()}
+            onSubmit={submitMessage}
           />
 
           <input

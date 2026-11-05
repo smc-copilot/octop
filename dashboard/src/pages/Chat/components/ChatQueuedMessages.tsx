@@ -1,22 +1,14 @@
-import {
-  CornerDownLeft,
-  ExternalLink,
-  Paperclip,
-  Pencil,
-  X,
-} from "lucide-react";
+import { CornerDownLeft, Paperclip, Pencil, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { QueuedChatItem } from "../hooks/useChatMessageQueue";
 import styles from "../index.module.less";
 
 interface ChatQueuedMessagesProps {
   items: QueuedChatItem[];
-  displayTarget: { agentId: string; threadId: string | null };
   onRemove: (id: string) => void;
   onReclaim: (id: string) => void;
   /** Commit a local draft as a mid-turn steer. */
   onSteer?: (id: string) => void;
-  onOpenTarget?: (target: { agentId: string; threadId: string }) => void;
 }
 
 function previewText(item: QueuedChatItem): string {
@@ -25,11 +17,9 @@ function previewText(item: QueuedChatItem): string {
 
 export default function ChatQueuedMessages({
   items,
-  displayTarget,
   onRemove,
   onReclaim,
   onSteer,
-  onOpenTarget,
 }: ChatQueuedMessagesProps) {
   const { t } = useTranslation();
 
@@ -51,14 +41,7 @@ export default function ChatQueuedMessages({
                 count: attachmentCount,
               })
             : t("chat.queue.emptyItem"));
-        const isAlias = Boolean(
-          item.displayOrigin &&
-            (displayTarget.agentId !== item.target.agentId ||
-              displayTarget.threadId !== item.target.threadId),
-        );
-        const canSteer =
-          Boolean(onSteer) && item.status === "queued" && !isAlias;
-        const canEdit = item.status !== "sending" && !isAlias;
+        const canSteer = Boolean(onSteer);
 
         return (
           <div
@@ -71,19 +54,6 @@ export default function ChatQueuedMessages({
             ) : null}
             <div className={styles.queuedMessageBody}>
               <span className={styles.queuedMessageText}>{label}</span>
-              {isAlias ? (
-                <span>
-                  {t("chat.queue.openTarget", {
-                    threadId: item.target.threadId,
-                    defaultValue: `Queued for ${item.target.threadId}`,
-                  })}
-                </span>
-              ) : null}
-              {item.status !== "queued" ? (
-                <span role="status" aria-live="polite">
-                  {t(`chat.queue.${item.status}`)}
-                </span>
-              ) : null}
               {attachmentCount > 0 && text && (
                 <span
                   className={styles.queuedMessageAttach}
@@ -97,23 +67,6 @@ export default function ChatQueuedMessages({
               )}
             </div>
             <div className={styles.queuedMessageActions}>
-              {isAlias && onOpenTarget ? (
-                <button
-                  type="button"
-                  className={styles.queuedMessageIconBtn}
-                  onClick={() => onOpenTarget(item.target)}
-                  title={t("chat.queue.openTarget", {
-                    threadId: item.target.threadId,
-                    defaultValue: `Open ${item.target.threadId}`,
-                  })}
-                  aria-label={t("chat.queue.openTarget", {
-                    threadId: item.target.threadId,
-                    defaultValue: `Open ${item.target.threadId}`,
-                  })}
-                >
-                  <ExternalLink size={14} aria-hidden />
-                </button>
-              ) : null}
               {canSteer ? (
                 <button
                   type="button"
@@ -129,7 +82,6 @@ export default function ChatQueuedMessages({
                 type="button"
                 className={styles.queuedMessageIconBtn}
                 onClick={() => onReclaim(item.id)}
-                disabled={!canEdit}
                 aria-label={t("chat.queue.reclaim")}
                 title={t("chat.queue.reclaim")}
               >
@@ -139,7 +91,6 @@ export default function ChatQueuedMessages({
                 type="button"
                 className={styles.queuedMessageIconBtn}
                 onClick={() => onRemove(item.id)}
-                disabled={!canEdit}
                 aria-label={t("chat.queue.remove")}
                 title={t("chat.queue.remove")}
               >

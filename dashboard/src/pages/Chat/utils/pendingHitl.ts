@@ -12,7 +12,6 @@ export type PendingAsk = {
   messageId: string;
   actions: HitlActionRequest[];
   questions: AskQuestion[];
-  pendingId?: string;
 };
 
 /** True when a pending HITL can actually be resumed on the server. */
@@ -132,7 +131,6 @@ export function findPendingAsk(messages: ChatMessage[]): PendingAsk | null {
         messageId: message.id,
         actions: hitl.action_requests,
         questions,
-        ...(hitl.pending_id ? { pendingId: hitl.pending_id } : {}),
       };
     }
   }

@@ -38,23 +38,6 @@ vi.mock("../../../layouts/PageShell", () => ({
     ),
   },
 }));
-vi.mock("../../../plugins/toolRenderers/PluginSettingsSurface", async () => {
-  const ReactModule = await import("react");
-  return {
-    PluginSettingsSurface: () => {
-      const [draft, setDraft] = ReactModule.useState("");
-      return (
-        <label>
-          Enterprise plugin setting
-          <input
-            value={draft}
-            onChange={(event) => setDraft(event.currentTarget.value)}
-          />
-        </label>
-      );
-    },
-  };
-});
 vi.mock("./ConnectorCard", () => ({
   ConnectorCard: ({ entry }: { entry: { name: string } }) => (
     <div>{entry.name} built-in connector</div>
