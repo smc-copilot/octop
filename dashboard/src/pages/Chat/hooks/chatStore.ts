@@ -828,6 +828,12 @@ export function getSnapshot(sessionId: string): SessionSnapshot {
   return state._snapshot;
 }
 
+/** True while a turn should block a new user dispatch for this session. */
+export function isSessionBusyForTurnDispatch(sessionId: string): boolean {
+  if (!sessionId) return false;
+  return getSnapshot(sessionId).isStreaming;
+}
+
 /** Remember or clear the pending plan file for the PlanReady card. */
 export function setPendingPlanPath(
   sessionId: string,
