@@ -1,0 +1,6 @@
+{
+  "renderers": [
+    { "id": "business_ui_card", "tools": ["business_ui_draft"] },
+    { "id": "business_ui_config", "tools": ["business_ui_connections"] }
+  ]
+}

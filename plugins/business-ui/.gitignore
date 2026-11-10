@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+.adapter-certs/
+.pytest_cache/
