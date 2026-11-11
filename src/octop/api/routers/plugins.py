@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
-import functools
+import asyncio
 import mimetypes
 import tempfile
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from octop.api.common.agent import assert_agent_owner as _assert_agent_owner
 from octop.api.common.upload_limit import read_upload_capped
 from octop.api.deps import current_user, get_server, require_permission
-from octop.api.routers import plugin_actions
-from octop.infra.agents.plugins.manager import PluginManager, mutate
+from octop.infra.agents.plugins.manager import PluginManager
 from octop.infra.agents.plugins.plugin_tool_defaults import (
     agent_plugin_enabled,
     merge_plugins_enabled_settings,
@@ -26,7 +25,6 @@ from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.server import OctopServer
 
 router = APIRouter(prefix="/plugins", tags=["plugins"])
-router.include_router(plugin_actions.router)
 
 _UI_CONTENT_TYPES = {
     ".js": "text/javascript; charset=utf-8",
@@ -99,13 +97,6 @@ def _plugin_manager(server: OctopServer) -> PluginManager:
     return mgr
 
 
-async def _run_manager(manager: PluginManager, function: Any, /, *args: Any, **kwargs: Any) -> Any:
-    return await mutate(
-        functools.partial(function, *args, **kwargs),
-        manager=manager,
-    )
-
-
 @router.get("", summary="List installed plugins")
 async def list_plugins(
     server: OctopServer = Depends(get_server),
@@ -127,7 +118,7 @@ async def reload_plugins(
     disk install does not update the running server until reload or restart.
     """
     mgr = _plugin_manager(server)
-    loaded = await _run_manager(mgr, mgr.load_installed, install_deps=True)
+    loaded = mgr.load_installed(install_deps=True)
     if server.app_runtime is not None:
         await server.refresh_plugin_channels()
         await server.app_runtime.agent_registry.reload_all()
@@ -152,7 +143,7 @@ async def install_plugin(
 ) -> dict[str, Any]:
     mgr = _plugin_manager(server)
     try:
-        loaded = await _run_manager(mgr, mgr.install_url, body.url)
+        loaded = mgr.install_url(body.url)
     except OctopError:
         raise
     except Exception as exc:
@@ -162,7 +153,7 @@ async def install_plugin(
             details={"reason": str(exc)},
         ) from exc
     if server.app_runtime is not None:
-        await _run_manager(mgr, mgr.load_installed, install_deps=False)
+        mgr.load_installed(install_deps=False)
         await server.refresh_plugin_channels()
         await server.app_runtime.agent_registry.reload_all()
     return {
@@ -197,18 +188,14 @@ async def upload_plugin(
     )
     if not raw:
         raise OctopError(ErrorCode.PLUGIN_INVALID_ARCHIVE, "empty plugin archive")
-
-    def install_uploaded() -> Any:
+    try:
         with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
             tmp.write(raw)
             tmp_path = Path(tmp.name)
         try:
-            return mgr.install_archive(tmp_path, force=force)
+            loaded = mgr.install_archive(tmp_path, force=force)
         finally:
             tmp_path.unlink(missing_ok=True)
-
-    try:
-        loaded = await _run_manager(mgr, install_uploaded)
     except OctopError:
         raise
     except Exception as exc:
@@ -218,7 +205,7 @@ async def upload_plugin(
             details={"reason": str(exc)},
         ) from exc
     if server.app_runtime is not None:
-        await _run_manager(mgr, mgr.load_installed, install_deps=False)
+        mgr.load_installed(install_deps=False)
         await server.refresh_plugin_channels()
         await server.app_runtime.agent_registry.reload_all()
     return {
@@ -231,11 +218,13 @@ async def upload_plugin(
 
 @router.get("/market", summary="List marketplace catalog plugins")
 async def list_market_plugins(
+    accept_language: str | None = Header(default=None),
     server: OctopServer = Depends(get_server),
     _user: Any = Depends(require_permission("plugin_market")),
 ) -> list[dict[str, Any]]:
-    """Return the in-tree marketplace catalog (future: remote index API)."""
-    return _plugin_manager(server).list_market()
+    """Return the portal marketplace catalog in the caller's language."""
+    language = accept_language or "zh"
+    return await asyncio.to_thread(_plugin_manager(server).list_market, language)
 
 
 @router.post(
@@ -244,14 +233,30 @@ async def list_market_plugins(
 )
 async def install_market_plugin(
     plugin_id: str,
-    force: bool = False,
+    version: str | None = Query(
+        default=None,
+        description=(
+            "Catalog release to install. Use latest for the current catalog release. "
+            "A different release already on disk is replaced."
+        ),
+        max_length=41,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,40}$",
+    ),
+    force: bool = Query(
+        default=False,
+        description="Replace an install of the same release.",
+    ),
     server: OctopServer = Depends(get_server),
     _user: Any = Depends(require_permission("plugin_market")),
 ) -> dict[str, Any]:
-    """Copy a catalog plugin into ``~/.octop/plugins`` (future: download ZIP)."""
+    """Download one catalog release into ``~/.octop/plugins``."""
     mgr = _plugin_manager(server)
+    loop = asyncio.get_running_loop()
     try:
-        loaded = await _run_manager(mgr, mgr.install_from_market, plugin_id, force=force)
+        loaded = await loop.run_in_executor(
+            None,
+            lambda: mgr.install_from_market(plugin_id, version=version, force=force),
+        )
     except OctopError:
         raise
     except Exception as exc:
@@ -283,7 +288,6 @@ async def get_market_plugin_ui_asset(
     server: OctopServer = Depends(get_server),
     _user: Any = Depends(require_permission("plugin_market")),
 ) -> Response:
-    """Static files from the in-tree catalog (icons before install)."""
     target = _plugin_manager(server).resolve_market_ui_file(plugin_id, file_path)
     suffix = target.suffix.lower()
     media_type = _UI_CONTENT_TYPES.get(suffix) or mimetypes.guess_type(target.name)[0]
@@ -339,9 +343,7 @@ async def patch_plugin(
     mgr = _plugin_manager(server)
     item: dict[str, Any] | None = None
     if body.enabled is not None:
-        item = cast(
-            dict[str, Any], await _run_manager(mgr, mgr.set_enabled, plugin_id, body.enabled)
-        )
+        item = mgr.set_enabled(plugin_id, body.enabled)
         if server.app_runtime is not None:
             await server.refresh_plugin_channels()
             await server.app_runtime.agent_registry.reload_all()
@@ -372,8 +374,7 @@ async def uninstall_plugin(
 ) -> dict[str, str]:
     from octop.infra.users.groups import RESOURCE_PLUGIN
 
-    mgr = _plugin_manager(server)
-    await _run_manager(mgr, mgr.uninstall, plugin_id)
+    _plugin_manager(server).uninstall(plugin_id)
     _plugin_group_access(server).clear(RESOURCE_PLUGIN, plugin_id)
     if server.app_runtime is not None:
         await server.refresh_plugin_channels()

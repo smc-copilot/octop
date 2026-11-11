@@ -1,17 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Spin } from "antd";
 import { clearAuthToken, getAuthToken } from "../api/request";
 import { authApi, type OctopUser } from "../api/modules/auth";
 import { applyUserLocale } from "../utils/locale";
 import { isNetworkFetchError } from "../utils/networkError";
 import { CurrentUserProvider } from "../hooks/useCurrentUser";
-import {
-  getAuthSessionEpoch,
-  isAuthSessionCurrent,
-  observeAuthPrincipal,
-} from "../api/authSession";
+import { useTheme } from "../context/ThemeContext";
 import BootOfflinePanel from "./BootOfflinePanel";
+import BrandLoading from "./BrandLoading";
 
 interface AuthGuardProps {
   children: React.ReactNode;
@@ -47,47 +43,34 @@ export default function AuthGuard({ children }: AuthGuardProps) {
   const [checking, setChecking] = useState(true);
   const [authed, setAuthed] = useState(false);
   const [user, setUser] = useState<OctopUser | null>(null);
+  const { bindUser } = useTheme();
+  useEffect(() => {
+    bindUser(user?.id ?? null);
+    return () => bindUser(null);
+  }, [user?.id, bindUser]);
   const [offline, setOffline] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
-  const verificationSequence = useRef(0);
-  const publishUser = useCallback(
-    (next: React.SetStateAction<OctopUser | null>) => {
-      const resolved = typeof next === "function" ? next(user) : next;
-      observeAuthPrincipal(resolved);
-      setUser(resolved);
-    },
-    [user],
-  );
 
   useEffect(() => {
     let cancelled = false;
-    const sequence = ++verificationSequence.current;
-    let leaseEpoch = getAuthSessionEpoch();
-    const isCurrent = () =>
-      !cancelled &&
-      verificationSequence.current === sequence &&
-      isAuthSessionCurrent(leaseEpoch);
 
     const check = async () => {
-      if (isCurrent()) setOffline(false);
+      setOffline(false);
       try {
         const status = await authApi.getAuthStatus();
-        if (!isCurrent()) return;
 
         // No admin yet → push to setup wizard; drop any leftover JWT from a
         // previous install so background prefetch cannot stampede lockdown.
         if (status.setup_required) {
           clearAuthToken();
-          if (verificationSequence.current === sequence) {
-            navigateRef.current("/setup", { replace: true });
-          }
+          if (!cancelled) navigateRef.current("/setup", { replace: true });
           return;
         }
 
         // Setup done. Need a token.
         const token = getAuthToken();
         if (!token) {
-          if (isCurrent()) {
+          if (!cancelled) {
             setAuthed(false);
             // Stay on the spinner until navigation away completes — do not
             // flip ``checking`` off or children would mount and 401→/login.
@@ -101,16 +84,14 @@ export default function AuthGuard({ children }: AuthGuardProps) {
         // need to swallow the throw here.
         try {
           const me = await authApi.me();
-          if (!isCurrent()) return;
-          leaseEpoch = observeAuthPrincipal(me);
-          await applyUserLocale(me.locale, { isCurrent });
-          if (isCurrent()) {
+          await applyUserLocale(me.locale);
+          if (!cancelled) {
             setUser(me);
             setAuthed(true);
             setChecking(false);
           }
         } catch (err) {
-          if (!isCurrent()) return;
+          if (cancelled) return;
           if (isNetworkFetchError(err)) {
             setOffline(true);
             setChecking(false);
@@ -121,7 +102,7 @@ export default function AuthGuard({ children }: AuthGuardProps) {
           navigateRef.current("/login", { replace: true });
         }
       } catch (err) {
-        if (!isCurrent()) return;
+        if (cancelled) return;
         // Backend unreachable (or setup/status otherwise failed) — do not
         // mount MainLayout with a null user (that produced a blank white
         // shell with no recovery action).
@@ -152,23 +133,11 @@ export default function AuthGuard({ children }: AuthGuardProps) {
   }
 
   if (checking || !authed) {
-    return (
-      <div
-        style={{
-          height: "100dvh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          background: "var(--fn-bg-layout)",
-        }}
-      >
-        <Spin size="large" />
-      </div>
-    );
+    return <BrandLoading viewport />;
   }
 
   return (
-    <CurrentUserProvider user={user} setUser={publishUser}>
+    <CurrentUserProvider user={user} setUser={setUser}>
       {children}
     </CurrentUserProvider>
   );

@@ -1,11 +1,11 @@
 import { getApiUrl } from "./config";
+import {
+  isLocalDesktopUser,
+  registerDeviceSession,
+  renewDesktopSession,
+} from "./desktopSession";
 import i18n from "../i18n";
 import { markNavigatingAway } from "../utils/reloadOnStaleChunk";
-import {
-  getAuthSessionEpoch,
-  invalidateAuthSession,
-  isAuthSessionCurrent,
-} from "./authSession";
 
 const AUTH_TOKEN_KEY = "auth_token";
 /** sessionStorage handoff for SSO redirects / popups (default = remember). */
@@ -76,7 +76,7 @@ export function isSessionOnlyAuth(): boolean {
  * ``sessionStorage`` (cleared when the tab/window closes). SSO popups must
  * post the token back to the opener — ``sessionStorage`` is not shared.
  */
-function writeAuthToken(token: string, remember: boolean): void {
+export function setAuthToken(token: string, remember: boolean = true) {
   if (remember) {
     localStorage.setItem(AUTH_TOKEN_KEY, token);
     sessionStorage.removeItem(AUTH_TOKEN_KEY);
@@ -85,11 +85,6 @@ function writeAuthToken(token: string, remember: boolean): void {
     localStorage.removeItem(AUTH_TOKEN_KEY);
   }
   clearSetupRequired();
-}
-
-export function setAuthToken(token: string, remember: boolean = true) {
-  if (getAuthToken() !== token) invalidateAuthSession();
-  writeAuthToken(token, remember);
 }
 
 /** Get JWT token from localStorage or (session-only) sessionStorage. */
@@ -103,7 +98,6 @@ export function getAuthToken(): string {
 
 /** Remove JWT token from both storages. */
 export function clearAuthToken() {
-  invalidateAuthSession();
   localStorage.removeItem(AUTH_TOKEN_KEY);
   sessionStorage.removeItem(AUTH_TOKEN_KEY);
   sessionStorage.removeItem(AUTH_REMEMBER_PREF_KEY);
@@ -115,16 +109,7 @@ export function clearAuthToken() {
 export function applyRenewedAccessToken(response: Response): void {
   const renewed = response.headers.get(ACCESS_TOKEN_RESPONSE_HEADER);
   if (renewed) {
-    writeAuthToken(renewed, !isSessionOnlyAuth());
-  }
-}
-
-export { getAuthSessionEpoch, isAuthSessionCurrent } from "./authSession";
-export { subscribeAuthSession, observeAuthPrincipal } from "./authSession";
-
-function assertAuthSessionCurrent(capturedEpoch: number): void {
-  if (!isAuthSessionCurrent(capturedEpoch)) {
-    throw new Error("Authentication session changed during request");
+    setAuthToken(renewed, !isSessionOnlyAuth());
   }
 }
 
@@ -179,7 +164,6 @@ function assertNotSetupLocked(path: string): void {
 async function check503ForSetupRequired(
   path: string,
   response: Response,
-  capturedEpoch: number,
 ): Promise<boolean> {
   if (response.status !== 503) return false;
   let body: unknown = null;
@@ -194,7 +178,6 @@ async function check503ForSetupRequired(
     typeof body === "object" &&
     (body as Record<string, unknown>).setup_required === true
   ) {
-    assertAuthSessionCurrent(capturedEpoch);
     markSetupRequired();
     clearAuthToken();
     if (!isSetupApiPath(path)) {
@@ -370,13 +353,11 @@ async function errorCodeOf(response: Response): Promise<string | undefined> {
 async function throwIfUnauthorized(
   path: string,
   response: Response,
-  capturedEpoch: number,
 ): Promise<void> {
   if (response.status !== 401 || path.startsWith("/auth/")) {
     return;
   }
   const code = await errorCodeOf(response);
-  assertAuthSessionCurrent(capturedEpoch);
   // Business 401s (peer login, etc.) are not a dead local session.
   if (
     code &&
@@ -403,30 +384,70 @@ async function throwIfUnauthorized(
   throw new Error(message);
 }
 
+/**
+ * Retry a 401 once with a JWT minted by the desktop shell.
+ *
+ * A desktop user has no password to type, so an expired session used to be a
+ * dead end. The shell holds a device credential and can issue a new token; on
+ * the web this returns null immediately and the caller falls through to the
+ * ordinary login redirect.
+ */
+async function retryWithDesktopSession(
+  path: string,
+  url: string,
+  options: RequestInit,
+  response: Response,
+): Promise<Response | null> {
+  if (response.status !== 401) return null;
+  // A rejected login is a credential problem, not an expired session.
+  if (path.startsWith("/auth/login") || path.startsWith("/auth/device/")) {
+    return null;
+  }
+  // Business 401s (peer login, setup guards) would only be retried in vain.
+  const code = await errorCodeOf(response);
+  if (code && !SESSION_UNAUTHORIZED_CODES.has(code)) return null;
+  const current = getAuthToken();
+  // A password account's expired token must land on the login page. Only the
+  // desktop local user is renewed in place.
+  if (current && !isLocalDesktopUser(current)) return null;
+  const issued = await renewDesktopSession();
+  if (!issued?.access_token || !isLocalDesktopUser(issued.access_token)) {
+    return null;
+  }
+  setAuthToken(issued.access_token, !isSessionOnlyAuth());
+  return fetch(url, {
+    ...options,
+    headers: buildHeaders(path, options.headers),
+  });
+}
+
 export async function request<T = unknown>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
   assertNotSetupLocked(path);
-  const authEpoch = getAuthSessionEpoch();
 
   const url = getApiUrl(path);
 
   const headers = buildHeaders(path, options.headers);
 
-  const response = await fetch(url, {
+  let response = await fetch(url, {
     ...options,
     headers,
   });
-  assertAuthSessionCurrent(authEpoch);
 
-  if (await check503ForSetupRequired(path, response, authEpoch)) {
+  const retried = await retryWithDesktopSession(path, url, options, response);
+  if (retried) response = retried;
+
+  if (await check503ForSetupRequired(path, response)) {
     throw new SetupRequiredError();
   }
 
-  await throwIfUnauthorized(path, response, authEpoch);
-  assertAuthSessionCurrent(authEpoch);
+  await throwIfUnauthorized(path, response);
   applyRenewedAccessToken(response);
+  // Desktop: bind the shell's device credential the first chance we get, so the
+  // next cold start can renew instead of landing on /login.
+  if (response.ok) void registerDeviceSession(getAuthToken());
 
   if (!response.ok) {
     if (response.status === 403 && isAgentScopedPath(path)) {
@@ -435,7 +456,6 @@ export async function request<T = unknown>(
       );
     }
     const text = await response.text().catch(() => "");
-    assertAuthSessionCurrent(authEpoch);
     throw new Error(
       `Request failed: ${response.status} ${response.statusText}${
         text ? ` - ${text}` : ""
@@ -449,14 +469,10 @@ export async function request<T = unknown>(
 
   const contentType = response.headers.get("content-type") || "";
   if (!contentType.includes("application/json")) {
-    const text = await response.text();
-    assertAuthSessionCurrent(authEpoch);
-    return text as unknown as T;
+    return (await response.text()) as unknown as T;
   }
 
-  const data = (await response.json()) as T;
-  assertAuthSessionCurrent(authEpoch);
-  return data;
+  return (await response.json()) as T;
 }
 
 /**
@@ -472,7 +488,6 @@ export async function requestBlob(
   onProgress?: (loaded: number, total: number) => void,
 ): Promise<Blob> {
   assertNotSetupLocked(path);
-  const authEpoch = getAuthSessionEpoch();
 
   const url = getApiUrl(path);
   const headers = buildAuthHeaders(path);
@@ -480,19 +495,16 @@ export async function requestBlob(
     ...options,
     headers: { ...headers, ...(options.headers as Record<string, string>) },
   });
-  assertAuthSessionCurrent(authEpoch);
 
-  if (await check503ForSetupRequired(path, response, authEpoch)) {
+  if (await check503ForSetupRequired(path, response)) {
     throw new SetupRequiredError();
   }
 
-  await throwIfUnauthorized(path, response, authEpoch);
-  assertAuthSessionCurrent(authEpoch);
+  await throwIfUnauthorized(path, response);
   applyRenewedAccessToken(response);
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    assertAuthSessionCurrent(authEpoch);
     throw new Error(
       `Request failed: ${response.status} ${response.statusText}${
         text ? ` - ${text}` : ""
@@ -507,7 +519,6 @@ export async function requestBlob(
     let loaded = 0;
     for (;;) {
       const { done, value } = await reader.read();
-      assertAuthSessionCurrent(authEpoch);
       if (done) break;
       if (value) {
         chunks.push(value as unknown as BlobPart);
@@ -515,13 +526,10 @@ export async function requestBlob(
         onProgress(loaded, total);
       }
     }
-    assertAuthSessionCurrent(authEpoch);
     return new Blob(chunks);
   }
 
-  const blob = await response.blob();
-  assertAuthSessionCurrent(authEpoch);
-  return blob;
+  return response.blob();
 }
 
 /**
@@ -533,7 +541,6 @@ export async function probeAuthResource(
   options: RequestInit = {},
 ): Promise<void> {
   assertNotSetupLocked(path);
-  const authEpoch = getAuthSessionEpoch();
 
   const url = getApiUrl(path);
   const headers = buildAuthHeaders(path);
@@ -541,14 +548,12 @@ export async function probeAuthResource(
     ...options,
     headers: { ...headers, ...(options.headers as Record<string, string>) },
   });
-  assertAuthSessionCurrent(authEpoch);
 
-  if (await check503ForSetupRequired(path, response, authEpoch)) {
+  if (await check503ForSetupRequired(path, response)) {
     throw new SetupRequiredError();
   }
 
-  await throwIfUnauthorized(path, response, authEpoch);
-  assertAuthSessionCurrent(authEpoch);
+  await throwIfUnauthorized(path, response);
   applyRenewedAccessToken(response);
 
   if (!response.ok) {
@@ -576,7 +581,6 @@ export async function requestStream(
   options: RequestInit = {},
 ): Promise<{ contentType: string; body: ReadableStream<Uint8Array> }> {
   assertNotSetupLocked(path);
-  const authEpoch = getAuthSessionEpoch();
 
   const url = getApiUrl(path);
   const headers = buildAuthHeaders(path);
@@ -584,14 +588,12 @@ export async function requestStream(
     ...options,
     headers: { ...headers, ...(options.headers as Record<string, string>) },
   });
-  assertAuthSessionCurrent(authEpoch);
 
-  if (await check503ForSetupRequired(path, response, authEpoch)) {
+  if (await check503ForSetupRequired(path, response)) {
     throw new SetupRequiredError();
   }
 
-  await throwIfUnauthorized(path, response, authEpoch);
-  assertAuthSessionCurrent(authEpoch);
+  await throwIfUnauthorized(path, response);
   applyRenewedAccessToken(response);
 
   if (!response.ok) {
@@ -626,7 +628,6 @@ export async function requestUpload<T = unknown>(
   onProgress?: UploadProgressHandler,
 ): Promise<T> {
   assertNotSetupLocked(path);
-  const authEpoch = getAuthSessionEpoch();
 
   const url = getApiUrl(path);
   const headers = buildAuthHeaders(path);
@@ -675,52 +676,48 @@ export async function requestUpload<T = unknown>(
 
     xhr.onload = () => {
       void (async () => {
+        const status = xhr.status;
+        const responseText = xhr.responseText;
+        const responseHeaders = new Headers();
+        const renewed = xhr.getResponseHeader(ACCESS_TOKEN_RESPONSE_HEADER);
+        if (renewed) {
+          responseHeaders.set(ACCESS_TOKEN_RESPONSE_HEADER, renewed);
+        }
+        const response = new Response(responseText, {
+          status,
+          headers: responseHeaders,
+        });
+
+        if (await check503ForSetupRequired(path, response)) {
+          reject(new SetupRequiredError());
+          return;
+        }
+
         try {
-          const status = xhr.status;
-          const responseText = xhr.responseText;
-          const responseHeaders = new Headers();
-          const renewed = xhr.getResponseHeader(ACCESS_TOKEN_RESPONSE_HEADER);
-          if (renewed) {
-            responseHeaders.set(ACCESS_TOKEN_RESPONSE_HEADER, renewed);
-          }
-          const response = new Response(responseText, {
-            status,
-            headers: responseHeaders,
-          });
+          await throwIfUnauthorized(path, response);
+        } catch (err) {
+          reject(err);
+          return;
+        }
 
-          assertAuthSessionCurrent(authEpoch);
-          if (await check503ForSetupRequired(path, response, authEpoch)) {
-            reject(new SetupRequiredError());
-            return;
-          }
+        applyRenewedAccessToken(response);
 
-          try {
-            await throwIfUnauthorized(path, response, authEpoch);
-          } catch (err) {
-            reject(err);
-            return;
-          }
+        if (!response.ok) {
+          // Same shape as request() so parseApiError() can read the error envelope.
+          reject(
+            new Error(
+              `Upload failed: ${status}${
+                responseText ? ` - ${responseText}` : ""
+              }`,
+            ),
+          );
+          return;
+        }
 
-          assertAuthSessionCurrent(authEpoch);
-          applyRenewedAccessToken(response);
-
-          if (!response.ok) {
-            // Same shape as request() so parseApiError() can read the error envelope.
-            reject(
-              new Error(
-                `Upload failed: ${status}${
-                  responseText ? ` - ${responseText}` : ""
-                }`,
-              ),
-            );
-            return;
-          }
-
-          const data = (await response.json()) as T;
-          assertAuthSessionCurrent(authEpoch);
-          resolve(data);
-        } catch (error) {
-          reject(error);
+        try {
+          resolve((await response.json()) as T);
+        } catch {
+          reject(new Error("Upload failed: invalid JSON response"));
         }
       })();
     };
