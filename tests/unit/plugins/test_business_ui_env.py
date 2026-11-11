@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import threading
@@ -9,7 +10,7 @@ from typing import Any
 import pytest
 
 from octop.config import OctopConfig
-from octop.infra.agents.plugins.host_contracts import PluginActionError, PluginActor
+from octop.infra.agents.plugins.host_contracts import PluginActionError, PluginActor, RecordWrite
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.services import build_shared_services
@@ -29,6 +30,7 @@ from business_ui.env_config import (  # noqa: E402
     public_fingerprint,
     read_protected_file,
 )
+from business_ui.service import BusinessUiService  # noqa: E402
 from tests.unit.plugins.test_business_ui_actions import (  # noqa: E402
     _activate_oauth,
     _bind,
@@ -496,3 +498,106 @@ def test_relative_secret_ref_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(EnvConfigError) as load_exc:
         load_secret_bundle(spec)
     assert load_exc.value.code == "SECRET_REF_MISSING"
+
+
+@pytest.mark.asyncio
+async def test_env_sync_loop_treats_preset_event_as_wake_not_stop() -> None:
+    calls = 0
+    service = BusinessUiService(object())
+
+    async def fake_sync() -> None:
+        nonlocal calls
+        calls += 1
+        if calls >= 3:
+            raise asyncio.CancelledError
+
+    service.sync_env_managed = fake_sync  # type: ignore[method-assign]
+    wake = asyncio.Event()
+    wake.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(service.run_env_sync_loop(wake, interval=0.01), timeout=1)
+    assert calls >= 3
+
+
+@pytest.mark.asyncio
+async def test_unchanged_env_sync_does_not_bump_revision(
+    services: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    httpd, _state, pem, port = _serve(tmp_path)
+    facade = _bind(services)
+    admin_id, _user_id = _users(services)
+    try:
+        _apply_env(monkeypatch, _env_map(tmp_path, port=port, admin_id=admin_id, pem=pem))
+        await facade.invoke_action("connections.list", PluginActor(admin_id, True), {})
+        first = await facade.get_record("connections", "site-prod")
+        assert first is not None
+        await facade.invoke_action("connections.list", PluginActor(admin_id, True), {})
+        second = await facade.get_record("connections", "site-prod")
+        assert second is not None
+        assert second.revision == first.revision
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_unset_env_releases_to_chat_managed(
+    services: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    httpd, _state, pem, port = _serve(tmp_path)
+    facade = _bind(services)
+    admin_id, _user_id = _users(services)
+    try:
+        _apply_env(monkeypatch, _env_map(tmp_path, port=port, admin_id=admin_id, pem=pem))
+        listed = await facade.invoke_action("connections.list", PluginActor(admin_id, True), {})
+        assert listed["connections"][0]["managed_by"] == "env"
+        monkeypatch.delenv("BUSINESS_UI_BASE_URL", raising=False)
+        released = await facade.invoke_action("connections.list", PluginActor(admin_id, True), {})
+        assert released["env_sync_error"] is None
+        assert released["connections"][0]["managed_by"] == "chat"
+        assert released["env_managed_ids"] == []
+        deleted = await facade.invoke_action(
+            "connections.delete",
+            PluginActor(admin_id, True),
+            {"connection_id": "site-prod"},
+        )
+        assert deleted["deleted"] is True
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_empty_activation_fingerprint_is_inactive_when_connection_has_one(
+    services: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    httpd, _state, pem, port = _serve(tmp_path)
+    facade = _bind(services)
+    admin_id, user_id = _users(services)
+    try:
+        _apply_env(monkeypatch, _env_map(tmp_path, port=port, admin_id=admin_id, pem=pem))
+        await facade.invoke_action("connections.list", PluginActor(admin_id, True), {})
+        agent_id, thread_id = _scope(services, user_id, "legacy-fp")
+        actor = PluginActor(user_id, False, agent_id=agent_id, thread_id=thread_id)
+        await _activate_oauth(facade, actor, "site-prod", pem)
+        row = await facade.get_record("activations", f"u{user_id}-site-prod")
+        assert row is not None
+        payload = {k: v for k, v in row.payload.items() if k != "config_fingerprint"}
+        await facade.commit(
+            [RecordWrite("activations", row.logical_key, row.owner_user_id, payload, row.revision)]
+        )
+        listed = await facade.invoke_action("connections.list", actor, {})
+        assert listed["connections"][0]["activation_status"] == "inactive"
+        with pytest.raises(PluginActionError) as exc:
+            await facade.invoke_action(
+                "interactions.claim",
+                actor,
+                {
+                    "connection_id": "site-prod",
+                    "form_ref": "generic.request.edit",
+                    "call_id": "call-legacy1",
+                    "document_type": "generic_request",
+                    "schema_version": "1",
+                },
+            )
+        assert exc.value.code == "ACTIVATION_REQUIRED"
+    finally:
+        httpd.shutdown()

@@ -118,7 +118,7 @@ class ActivationMixin:
         }:
             return {"activation_status": "inactive"}
         stored_fp = str(record.payload.get("config_fingerprint") or "")
-        if config_fingerprint and stored_fp and stored_fp != config_fingerprint:
+        if config_fingerprint and stored_fp != config_fingerprint:
             return {"activation_status": "inactive"}
         expires = record.payload.get("expires_at")
         status = str(record.payload.get("status") or "inactive")

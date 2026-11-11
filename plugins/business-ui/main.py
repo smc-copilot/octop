@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from octop_harness.plugins import PluginContext
@@ -26,14 +25,8 @@ def setup(ctx: PluginContext) -> None:
             facade.register_action(name, input_model, output_model, handler, summary, permission)
         service = BusinessUiService(facade)
 
-        async def env_sync_worker(stop: Any) -> None:
-            while True:
-                await service.sync_env_managed()
-                try:
-                    await asyncio.wait_for(stop.wait(), timeout=20)
-                    return
-                except TimeoutError:
-                    continue
+        async def env_sync_worker(wake: Any) -> None:
+            await service.run_env_sync_loop(wake, interval=20)
 
         facade.register_background_worker("env_sync", env_sync_worker)
 

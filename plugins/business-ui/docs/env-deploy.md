@@ -50,7 +50,7 @@ chmod 0600 /etc/octop/business-ui/service.token
 - `managed_by=env` 的 `CONNECTION_ID`：**环境变量为准**；聊天保存/删除返回 `ENV_MANAGED`
 - 聊天不得再创建**同一 Adapter URL** 的第二条连接
 - 其它 chat-managed 连接仍可在配置卡上管
-- `BASE_URL` 未设：环境引导关闭，行为与从前相同
+- 去掉 `BUSINESS_UI_BASE_URL`（或换了 `CONNECTION_ID`）：原先 env 行改回 `managed_by=chat`，**不删记录、不关服务鉴权**；管理员随后可在配置卡删除。畸形 env 失败关闭，不释放。
 - 已存 issuer 与 `BUSINESS_UI_INSTANCE_ISSUER` 不一致：失败关闭，不覆盖
 - `user_auth_method` / issuer / client_id / Adapter URL 变化会换 `config_fingerprint`，旧用户激活作废（`stale_config`），必须重新激活。服务密钥文件轮换只重写 Host 服务凭据，不继承到别的用户
 
@@ -73,7 +73,7 @@ python -m business_ui plan
 3. 填 `docs/env.template`：每台机器换 issuer、CONNECTION_ID、URL、文件路径。
 4. 写入 Dashboard 环境变量 **或** `~/.octop/env` 后**重启**（仅磁盘编辑时）。
 5. `python -m business_ui test` 应 `ok: true`。
-6. 启动/重载插件后等一次 list 或最多 ~20s 后台 sync。
+6. 启动/重载插件后等一次 list 或最多 ~20s 后台 sync（Host Event 是唤醒闩，不是停止信号）。
 7. **每个**业务用户在草稿卡上激活；不要把用户 PAT 放进全局 env。
 
 ## 与分支策略

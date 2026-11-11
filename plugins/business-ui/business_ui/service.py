@@ -105,6 +105,17 @@ def namespaced_actor(instance_issuer: str, user_id: int) -> dict[str, str]:
     return {"issuer": instance_issuer, "sub": f"{instance_issuer}|{user_id}"}
 
 
+def _env_payload_matches(existing: dict[str, Any], desired: dict[str, Any]) -> bool:
+    for key, right in desired.items():
+        left = existing.get(key)
+        if isinstance(right, list):
+            if list(left or []) != list(right):
+                return False
+        elif left != right:
+            return False
+    return True
+
+
 def _bind_key(agent_id: str, thread_id: str, call_id: str) -> str:
     digest = hashlib.sha256(f"{agent_id}\n{thread_id}\n{call_id}".encode()).hexdigest()[:40]
     return f"bind-{digest}"
@@ -215,10 +226,12 @@ class BusinessUiService(ActivationMixin):
                 self._last_env_error = f"{exc.code}: {exc.message}"
                 return self._last_env_error
             if spec is None:
+                await self._release_env_owned(keep_id=None)
                 self._last_env_error = None
                 return None
             try:
                 await self._apply_env_spec(spec)
+                await self._release_env_owned(keep_id=spec.connection_id)
             except EnvConfigError as exc:
                 self._last_env_error = f"{exc.code}: {exc.message}"
                 return self._last_env_error
@@ -227,6 +240,16 @@ class BusinessUiService(ActivationMixin):
                 return self._last_env_error
             self._last_env_error = None
             return None
+
+    async def run_env_sync_loop(self, wake: asyncio.Event, *, interval: float = 20) -> None:
+        """Host Event is a wake latch (starts set). Cancel the task to stop."""
+        while True:
+            await self.sync_env_managed()
+            wake.clear()
+            try:
+                await asyncio.wait_for(wake.wait(), timeout=interval)
+            except TimeoutError:
+                continue
 
     async def _apply_env_spec(self, spec: EnvConnectionSpec) -> None:
         current_issuer = await self.instance_issuer()
@@ -338,14 +361,41 @@ class BusinessUiService(ActivationMixin):
             "config_fingerprint": fingerprint,
             "secret_material_hash": material,
         }
-        await self._commit(
-            [RecordWrite(CONNECTIONS, spec.connection_id, owner_id, record_payload, expected)],
-            activations,
-            deletions=deletions,
+        unchanged = (
+            existing is not None
+            and not restage
+            and not activations
+            and _env_payload_matches(existing.payload, record_payload)
         )
-        prev_fp = None if existing is None else existing.payload.get("config_fingerprint")
-        if prev_fp and prev_fp != fingerprint:
+        if not unchanged:
+            await self._commit(
+                [RecordWrite(CONNECTIONS, spec.connection_id, owner_id, record_payload, expected)],
+                activations,
+                deletions=deletions,
+            )
+        prev_fp = "" if existing is None else str(existing.payload.get("config_fingerprint") or "")
+        if existing is not None and prev_fp != fingerprint:
             await self._invalidate_stale_activations(spec.connection_id, fingerprint)
+
+    async def _release_env_owned(self, keep_id: str | None) -> None:
+        for record in await self._facade.list_records(CONNECTIONS):
+            payload = dict(record.payload)
+            if payload.get("deleted") or payload.get("managed_by") != "env":
+                continue
+            if keep_id and str(payload.get("connection_id") or "") == keep_id:
+                continue
+            payload["managed_by"] = "chat"
+            await self._commit(
+                [
+                    RecordWrite(
+                        CONNECTIONS,
+                        record.logical_key,
+                        record.owner_user_id,
+                        payload,
+                        record.revision,
+                    )
+                ]
+            )
 
     async def _invalidate_stale_activations(self, connection_id: str, fingerprint: str) -> None:
         for record in await self._facade.list_records(ACTIVATIONS):

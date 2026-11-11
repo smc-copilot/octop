@@ -734,7 +734,7 @@ function ConfigCard(props) {
     setRows(res.connections || []);
     setCanManage(!!res.can_manage);
     setIssuer(res.instance_issuer || "");
-    if (res.env_sync_error) setError(String(res.env_sync_error));
+    setError(res.env_sync_error ? String(res.env_sync_error) : "");
   };
   useEffect(() => {
     reload().catch((err) => setError(String(err?.message || err)));
