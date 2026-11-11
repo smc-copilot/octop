@@ -12,6 +12,7 @@ class _Strict(BaseModel):
 
 
 AuthMethod = Literal["api_token", "authorization_code"]
+UserAuthMethod = Literal["oauth2", "native_login", "personal_access_token"]
 TicketAction = Literal["edit", "save", "submit", "view_detail"]
 
 
@@ -30,6 +31,14 @@ class ConnectionSaveInput(_Strict):
     tls_ca_pem: str | None = Field(default=None, max_length=32_000)
     enabled: bool = True
     instance_issuer: str | None = Field(default=None, max_length=512)
+    user_auth_method: UserAuthMethod = "oauth2"
+    oauth_discovery_url: str | None = Field(default=None, max_length=2048)
+    oauth_authorize_url: str | None = Field(default=None, max_length=2048)
+    oauth_token_url: str | None = Field(default=None, max_length=2048)
+    oauth_revoke_url: str | None = Field(default=None, max_length=2048)
+    oauth_client_id: str | None = Field(default=None, max_length=256)
+    oauth_client_secret: str | None = Field(default=None, max_length=8192)
+    oauth_scopes: str | None = Field(default=None, max_length=512)
 
     @field_validator("extra_origins", "private_allow")
     @classmethod
@@ -125,3 +134,39 @@ class ClaimOutput(InteractionStateOutput):
 class CancelOutput(_Strict):
     interaction_id: str
     submission_status: str
+
+
+class ActivationStartOutput(_Strict):
+    connection_id: str
+    method: UserAuthMethod
+    authorization_url: str | None = None
+    state: str | None = None
+    expires_in: int | None = None
+    popup: bool = False
+    status: str
+
+
+class ActivationCompleteInput(_Strict):
+    state: str = Field(min_length=8, max_length=128)
+
+
+class ActivationNativeInput(_Strict):
+    connection_id: str = Field(min_length=1, max_length=80)
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class ActivationPatInput(_Strict):
+    connection_id: str = Field(min_length=1, max_length=80)
+    access_token: str = Field(min_length=8, max_length=8192)
+
+
+class ActivationStatusOutput(_Strict):
+    connection_id: str
+    status: str
+    method: UserAuthMethod | None = None
+    expires_at: int | None = None
+
+
+class ActivationDisconnectOutput(_Strict):
+    disconnected: bool

@@ -20,3 +20,7 @@ Base `116b57db97bcbba4e10dae9ad82142656d039d07`。参考 Adapter ≠ 客户生�
 | 登出即死 | **不实现** | 文档化 UNSUPPORTED | 不可测为成功 |
 | 包安装 | ZIP | `test_manager_installs_zip` + `load_plugin_dir` | 真机 `/data` OCTOP_HOME 上传 |
 | 无宿主 diff | 仅 `plugins/` `tests/unit/plugins/test_business_ui_*` | `git diff --name-only` 门禁 | — |
+| 每用户激活 | Host 凭据 + `activations.*` | OAuth 成功/重放/跨用户；未激活 403；native/PAT；刷新/撤销 | 真 IdP 浏览器弹窗 E2E |
+| 三选一用户授权 | 配置卡 `user_auth_method` | Test Connection 报告 methods；不支持则失败 | Casdoor/其它 IdP live |
+| OAuth2+PKCE 非 Casdoor | `oauth.py` 泛化 endpoints | discovery + S256 + state CSRF | 公网 IdP |
+| 密钥不进 URL/聊天 | PKCE/user token 仅凭据 | list/records 无 token/password/verifier | 日志抓包实机 |

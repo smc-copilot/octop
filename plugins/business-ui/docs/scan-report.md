@@ -28,3 +28,5 @@
 - 无登出通知钩子 → **不实现、不伪造**
 - 无 `registerSurface` 设置页 → 配置卡用 `octop_ui` renderer
 - 不 import 私有 repo / 不改 `src/octop` / `dashboard` / Casdoor
+- 无插件 OAuth 回调（`GET /api/plugins/{id}/resources/{token}` 要 JWT 且不转发 3xx；connector OAuth 仅宿主 `infra/connectors/`）→ 用户 OAuth 走 Adapter `/v1/oauth/callback` + PKCE verifier 存 Host 凭据 + `activations.complete` consume
+- 用户授权三选一（OAuth2/OIDC+PKCE、业务原生登录、PAT），握手 `features.user_auth_methods` 声明能力；不绑定 Casdoor

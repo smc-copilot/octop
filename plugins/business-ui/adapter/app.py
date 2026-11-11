@@ -6,12 +6,15 @@ as sample registry entries here.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import secrets
 import time
+from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode, urlparse
 
 PROTOCOL = "business-ui.v1"
 TICKET_TTL = 120
@@ -25,19 +28,63 @@ FORMS = {
 
 
 class AdapterState:
-    def __init__(self, connection_token: str, *, fail_detail: bool = False) -> None:
+    def __init__(
+        self,
+        connection_token: str,
+        *,
+        fail_detail: bool = False,
+        oauth_client_id: str = "bui-client",
+        oauth_client_secret: str = "bui-secret",
+    ) -> None:
         self.connection_token = connection_token
         self.fail_detail = fail_detail
+        self.oauth_client_id = oauth_client_id
+        self.oauth_client_secret = oauth_client_secret
         self.tickets: dict[str, dict[str, Any]] = {}
         self.used_tickets: set[str] = set()
         self.sessions: dict[str, dict[str, Any]] = {}
         self.interactions: dict[str, dict[str, Any]] = {}
         self.operations: dict[str, dict[str, Any]] = {}
+        self.oauth_authz: dict[str, dict[str, Any]] = {}
+        self.oauth_codes: dict[str, dict[str, Any]] = {}
+        self.oauth_by_state: dict[str, str] = {}
+        self.user_tokens: dict[str, dict[str, Any]] = {}
+        self.refresh_tokens: dict[str, str] = {}
+        self.revoked: set[str] = set()
+        self.native_users = {"demo": "demo-pass"}
+        self.supported_user_auth_methods = [
+            "oauth2",
+            "native_login",
+            "personal_access_token",
+        ]
 
     def auth_ok(self, header: str) -> bool:
         if not header.startswith("Bearer "):
             return False
         return header.removeprefix("Bearer ").strip() == self.connection_token
+
+    def user_ok(self, header: str) -> dict[str, Any] | None:
+        if not header.startswith("Bearer "):
+            return None
+        token = header.removeprefix("Bearer ").strip()
+        if token in self.revoked:
+            return None
+        meta = self.user_tokens.get(token)
+        if meta is None or float(meta.get("exp") or 0) < time.time():
+            return None
+        return meta
+
+    def issue_user_token(self, sub: str, *, expires: int = 3600) -> dict[str, Any]:
+        access = secrets.token_urlsafe(24)
+        refresh = secrets.token_urlsafe(24)
+        self.user_tokens[access] = {"sub": sub, "exp": time.time() + expires, "refresh": refresh}
+        self.refresh_tokens[refresh] = access
+        return {
+            "access_token": access,
+            "refresh_token": refresh,
+            "expires_in": expires,
+            "token_type": "Bearer",
+        }
 
 
 def _json(handler: BaseHTTPRequestHandler, status: int, body: dict[str, Any]) -> None:
@@ -93,21 +140,60 @@ def make_handler(state: AdapterState) -> type[BaseHTTPRequestHandler]:
             if path == "/v1/documents/submit":
                 self._mutate("submit")
                 return
-            if not state.auth_ok(self.headers.get("authorization") or ""):
-                _json(self, 401, {"ok": False, "error": "auth_failed"})
+            if path == "/v1/oauth/approve":
+                self._oauth_approve()
                 return
+            if path == "/v1/oauth/token":
+                self._oauth_token()
+                return
+            if path == "/v1/oauth/revoke":
+                self._oauth_revoke()
+                return
+            if not state.auth_ok(self.headers.get("authorization") or ""):
+                if path in {"/v1/tickets"} or path.startswith("/v1/interactions/"):
+                    if state.user_ok(self.headers.get("authorization") or "") is None:
+                        _json(self, 401, {"ok": False, "error": "auth_failed"})
+                        return
+                else:
+                    _json(self, 401, {"ok": False, "error": "auth_failed"})
+                    return
             if path == "/v1/handshake":
                 self._handshake()
                 return
+            if path == "/v1/oauth/consume":
+                self._oauth_consume()
+                return
+            if path == "/v1/auth/native":
+                self._native()
+                return
+            if path == "/v1/auth/pat":
+                self._pat()
+                return
             if path == "/v1/tickets":
+                if state.user_ok(self.headers.get("authorization") or "") is None:
+                    _json(self, 401, {"ok": False, "error": "user_token_required"})
+                    return
                 self._issue_ticket()
                 return
             if path.startswith("/v1/interactions/"):
+                if state.user_ok(self.headers.get("authorization") or "") is None:
+                    _json(self, 401, {"ok": False, "error": "user_token_required"})
+                    return
                 self._get_interaction(path.rsplit("/", 1)[-1])
                 return
             _json(self, 404, {"ok": False, "error": "not_found"})
 
         def do_GET(self) -> None:  # noqa: N802
+            path = self.path.split("?", 1)[0]
+            if path in {"/.well-known/oauth-authorization-server", "/v1/oauth/discovery"}:
+                self._discovery()
+                return
+            if path == "/v1/oauth/authorize":
+                self._oauth_authorize()
+                return
+            if path == "/v1/oauth/callback":
+                self._oauth_callback()
+                return
             _html(self, 404, "<html><body>not a business-ui adapter GET</body></html>")
 
         def _handshake(self) -> None:
@@ -129,6 +215,9 @@ def make_handler(state: AdapterState) -> type[BaseHTTPRequestHandler]:
                         "tickets": True,
                         "receipts": True,
                         "interactions": True,
+                        "user_auth_methods": list(state.supported_user_auth_methods),
+                        "oauth_authorization_code": True,
+                        "oauth_pkce_s256": True,
                     },
                     "ticket_path": "/v1/tickets",
                     "redeem_path": "/v1/tickets/redeem",
@@ -327,6 +416,161 @@ document.getElementById('f').addEventListener('submit', async (ev) => {{
                     "record_version": rec["record_version"],
                 },
             )
+
+        def _origin(self) -> str:
+            host = self.headers.get("host") or "127.0.0.1"
+            return f"https://{host}"
+
+        def _discovery(self) -> None:
+            origin = self._origin()
+            _json(
+                self,
+                200,
+                {
+                    "issuer": origin,
+                    "authorization_endpoint": origin + "/v1/oauth/authorize",
+                    "token_endpoint": origin + "/v1/oauth/token",
+                    "revocation_endpoint": origin + "/v1/oauth/revoke",
+                    "code_challenge_methods_supported": ["S256"],
+                    "grant_types_supported": ["authorization_code", "refresh_token"],
+                },
+            )
+
+        def _oauth_authorize(self) -> None:
+            query = parse_qs(urlparse(self.path).query)
+            client_id = (query.get("client_id") or [""])[0]
+            redirect_uri = (query.get("redirect_uri") or [""])[0]
+            state_q = (query.get("state") or [""])[0]
+            challenge = (query.get("code_challenge") or [""])[0]
+            method = (query.get("code_challenge_method") or [""])[0]
+            if (
+                client_id != state.oauth_client_id
+                or method != "S256"
+                or not challenge
+                or not state_q
+                or "/v1/oauth/callback" not in redirect_uri
+            ):
+                _html(self, 400, "<html><body>invalid authorize request</body></html>")
+                return
+            body = f"""<!DOCTYPE html><html><body>
+<form method="post" action="/v1/oauth/approve">
+<input type="hidden" name="client_id" value="{escape(client_id)}">
+<input type="hidden" name="redirect_uri" value="{escape(redirect_uri)}">
+<input type="hidden" name="state" value="{escape(state_q)}">
+<input type="hidden" name="code_challenge" value="{escape(challenge)}">
+<input name="username" value="demo">
+<button type="submit">Sign in</button>
+</form></body></html>"""
+            _html(self, 200, body)
+
+        def _read_form(self) -> dict[str, str]:
+            length = int(self.headers.get("content-length") or "0")
+            raw = self.rfile.read(length) if length else b""
+            parsed = parse_qs(raw.decode("utf-8"))
+            return {key: (vals[0] if vals else "") for key, vals in parsed.items()}
+
+        def _oauth_approve(self) -> None:
+            fields = self._read_form()
+            username = fields.get("username") or "demo"
+            if username not in state.native_users:
+                _html(self, 401, "<html><body>unknown user</body></html>")
+                return
+            code = secrets.token_urlsafe(24)
+            state.oauth_codes[code] = {
+                "state": fields.get("state"),
+                "challenge": fields.get("code_challenge"),
+                "redirect_uri": fields.get("redirect_uri"),
+                "sub": username,
+                "exp": time.time() + 120,
+            }
+            loc = fields.get("redirect_uri") or ""
+            loc += ("&" if "?" in loc else "?") + urlencode(
+                {"code": code, "state": fields.get("state") or ""}
+            )
+            self.send_response(302)
+            self.send_header("location", loc)
+            self.send_header("content-length", "0")
+            self.end_headers()
+
+        def _oauth_callback(self) -> None:
+            query = parse_qs(urlparse(self.path).query)
+            code = (query.get("code") or [""])[0]
+            st = (query.get("state") or [""])[0]
+            if code and st and code in state.oauth_codes:
+                state.oauth_by_state[st] = code
+            _html(
+                self,
+                200,
+                "<html><body data-oauth-complete='1'>You can close this window.</body></html>",
+            )
+
+        def _oauth_consume(self) -> None:
+            body = self._read_json()
+            st = str(body.get("state") or "")
+            code = state.oauth_by_state.pop(st, None)
+            if not code:
+                _json(self, 404, {"ok": False, "pending": True})
+                return
+            _json(self, 200, {"ok": True, "code": code})
+
+        def _oauth_token(self) -> None:
+            fields = self._read_form()
+            if fields.get("client_id") != state.oauth_client_id:
+                _json(self, 401, {"error": "invalid_client"})
+                return
+            if fields.get("client_secret") != state.oauth_client_secret:
+                _json(self, 401, {"error": "invalid_client"})
+                return
+            if fields.get("grant_type") == "refresh_token":
+                old_access = state.refresh_tokens.get(fields.get("refresh_token") or "")
+                if not old_access or old_access not in state.user_tokens:
+                    _json(self, 400, {"error": "invalid_grant"})
+                    return
+                sub = str(state.user_tokens[old_access]["sub"])
+                state.revoked.add(old_access)
+                _json(self, 200, state.issue_user_token(sub))
+                return
+            code = fields.get("code") or ""
+            meta = state.oauth_codes.pop(code, None)
+            if meta is None or meta["exp"] < time.time():
+                _json(self, 400, {"error": "invalid_grant"})
+                return
+            if fields.get("redirect_uri") != meta["redirect_uri"]:
+                _json(self, 400, {"error": "invalid_grant"})
+                return
+            verifier = fields.get("code_verifier") or ""
+            digest = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
+            challenge = digest.rstrip(b"=").decode("ascii")
+            if challenge != meta["challenge"]:
+                _json(self, 400, {"error": "invalid_grant"})
+                return
+            _json(self, 200, state.issue_user_token(str(meta["sub"])))
+
+        def _oauth_revoke(self) -> None:
+            fields = self._read_form()
+            token = fields.get("token") or ""
+            state.revoked.add(token)
+            _json(self, 200, {"ok": True})
+
+        def _native(self) -> None:
+            body = self._read_json()
+            username = str(body.get("username") or "")
+            password = str(body.get("password") or "")
+            if state.native_users.get(username) != password:
+                _json(self, 401, {"ok": False, "error": "invalid_credentials"})
+                return
+            sub = str((body.get("subject") or {}).get("sub") or username)
+            _json(self, 200, state.issue_user_token(sub))
+
+        def _pat(self) -> None:
+            body = self._read_json()
+            token = str(body.get("access_token") or "")
+            if not token.startswith("pat-") or len(token) < 8:
+                _json(self, 401, {"ok": False, "error": "invalid_pat"})
+                return
+            sub = str((body.get("subject") or {}).get("sub") or "pat")
+            state.user_tokens[token] = {"sub": sub, "exp": time.time() + 86400, "refresh": None}
+            _json(self, 200, {"ok": True, "expires_in": 86400})
 
         def _get_interaction(self, interaction_id: str) -> None:
             body = self._read_json()

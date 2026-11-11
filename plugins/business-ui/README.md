@@ -38,18 +38,20 @@ Octop 数据根目录：
 |------|------|
 | 显示名 | 普通用户下拉可见 |
 | HTTPS Adapter 基址 | 已批准业务端点，禁止 URL 用户信息/fragment |
-| 授权方式 | **可复用 API token** 与 **一次性授权码** 明确区分 |
-| 密钥 | 仅本表单掩码输入 → 已认证 `connections.save` → Host `stage_credential`。不进 tool args、聊天、`plugin_records`、localStorage |
+| 服务身份 | **可复用 API token** 与 **一次性授权码**（Octop↔Adapter 连接，不是用户登录） |
+| 服务密钥 | 仅本表单掩码输入 → 已认证 `connections.save` → Host `stage_credential`。不进 tool args、聊天、`plugin_records`、localStorage |
+| 用户授权方式 | 管理员三选一，**不绑定 Casdoor**：① 标准 OAuth2/OIDC authorization code + PKCE（任意合规 IdP：discovery 或 authorize/token/可选 revoke、client id/secret、scopes）；② 业务系统原生账号（插件表单 POST 到 Adapter，密码不保存）；③ 个人访问令牌 |
+| OAuth 端点 | discovery 或显式 URL；IdP 若不同源须写入额外 origin |
 | 额外 origin | 默认仅基址同源；仅当确实需要时由管理员精确批准 |
 | 私网例外 | 显式 host/CIDR，**不是**一键放行全部私网。链路本地/云 metadata 永远拒绝 |
 | 可选 TLS CA | 内网自签证书 PEM，随凭据加密存储 |
-| Test Connection | 分阶段：DNS/可达、服务身份、协议版本与能力、端点契约。**浏览器嵌入不做服务端绿灯**。任意网站 HTML/登录页记为 unsupported |
+| Test Connection | 分阶段：DNS/可达、服务身份、协议版本与能力、**报告 Adapter 支持的 user_auth_methods** 并校验已选方式。**浏览器嵌入不做服务端绿灯**。任意网站 HTML/登录页记为 unsupported |
 
 管理员角色来自 Host：`users.role == admin`（JWT `PluginActor.is_admin` + action `permission=admin` + `reauthorize_actor`）。前端 flag / 模型参数无效。
 
-普通用户只能选择**已启用**连接，不能改密钥。
+普通用户不能改连接密钥。**每位用户必须单独激活**（Activate / 重新连接 / 断开），令牌 per-user 存在 Host 凭据，绑定宿主校验的当前用户，永不进 URL/聊天/日志。未激活时卡片显示「需要激活/重新激活」。
 
-服务凭据只证明 **Adapter 连接**，不能读取其他用户单据。主体为 `issuer|local_user_id`（实例 issuer + 本地用户整数，跨实例不碰撞）。
+服务凭据只证明 **Adapter 连接**，不能读取其他用户单据。主体为 `issuer|local_user_id`（实例 issuer + 本地用户整数，跨实例不碰撞）。宿主无插件 OAuth 回调：PKCE verifier 存 Host 凭据，Adapter 托管 `/v1/oauth/callback`，插件用服务凭据 consume 一次性 code。
 
 ## 样例 UX（招聘两名实施顾问）
 

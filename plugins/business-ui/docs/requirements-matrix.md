@@ -12,6 +12,7 @@ Base SHA `116b57db97bcbba4e10dae9ad82142656d039d07`。
 | 草稿非授权 | 无 ExecutionTicket | claim 仅 HTTP+宿主 thread | — |
 | 管理员配置卡 | permission=admin | 插件配置卡 renderer | 不改 Octop 设置页 |
 | 密钥 Host 凭据 | stage_credential | 仅 action POST | 不进 records/聊天 |
+| 每用户激活（OAuth2/原生/PAT） | 凭据 owner=JWT 用户 | `activations.*` + Adapter AS | 无宿主 callback（Adapter 托管） |
 | 连接握手 | 插件出站 HTTPS | Adapter /v1/handshake | 浏览器嵌入门未测则不绿 |
 | SSRF | 插件自实现 | 显式 CIDR 例外 | 无 blanket 内网 |
 | 登出即死 | 无 | 不实现 | **UNSUPPORTED** |

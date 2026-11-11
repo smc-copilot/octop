@@ -82,7 +82,10 @@ flowchart LR
     "form_registry": true,
     "tickets": true,
     "receipts": true,
-    "interactions": true
+    "interactions": true,
+    "user_auth_methods": ["oauth2", "native_login", "personal_access_token"],
+    "oauth_authorization_code": true,
+    "oauth_pkce_s256": true
   },
   "ticket_path": "/v1/tickets",
   "redeem_path": "/v1/tickets/redeem",
@@ -94,11 +97,48 @@ flowchart LR
 ```
 
 任意网站返回 HTML/登录页/HTTP 200 但 `kind` 不是 `business-ui-adapter` → **unsupported**，不是成功。  
-`browser_embed` 阶段服务端恒为未评估（不绿灯）。
+`browser_embed` 阶段服务端恒为未评估（不绿灯）。  
+`features.user_auth_methods` 列出 Adapter **支持** 的用户授权方式（子集即可）。管理员在连接上选择的方式必须出现在该列表中，否则 Test Connection 失败关闭。列出 `oauth2` 时必须 `oauth_pkce_s256: true`。Casdoor 只是合规 IdP 之一，协议不绑定任何供应商。
+
+## 用户授权（每位 Octop 用户单独激活）
+
+服务凭据只证明 **Adapter 连接**。用户单据 API（票据、收据）使用 **该用户自己的令牌**。管理员登记连接时选择三种方式之一：
+
+### 1. 标准 OAuth2 / OIDC（authorization code + PKCE S256）
+
+可对接任意合规授权服务器。连接配置：
+
+| 字段 | 说明 |
+|------|------|
+| `oauth_discovery_url` | 可选 RFC 8414 / OIDC discovery |
+| `oauth_authorize_url` / `oauth_token_url` | 无 discovery 时必填 |
+| `oauth_revoke_url` | 可选；断开时尽力撤销 |
+| `oauth_client_id` / `oauth_client_secret` | 客户端；secret 进 Host 凭据 |
+| `oauth_scopes` | 默认 `openid profile` |
+
+**宿主没有插件 OAuth 回调。** 安全替代：Adapter 托管 `GET {base}/v1/oauth/callback`。流程：
+
+1. `activations.start` 生成 `state` + PKCE `code_verifier`（Host 凭据，绑定当前 JWT 用户）
+2. 用户弹出窗口打开 `authorization_url`（含 `state`、`code_challenge=S256`）
+3. IdP → Adapter callback 保存一次性 `code`（按 state 索引）
+4. 插件轮询 `activations.complete(state)`：用**服务凭据** `POST /v1/oauth/consume` 取 code，再在 token endpoint 用 verifier 换用户令牌
+5. `state` 一次性；跨用户、过期、重放失败关闭
+
+IdP 若与 Adapter 不同源，必须把 IdP origin 写入连接的额外 origin 列表。
+
+### 2. 业务系统原生账号
+
+插件表单收集用户名/密码，经已认证 `activations.native` POST 到 Adapter `POST /v1/auth/native`（服务 Bearer）。**密码不落盘**，只保存换回的用户令牌。
+
+### 3. 个人访问令牌
+
+用户在插件表单粘贴 PAT，经 `activations.pat` 交给 Adapter `POST /v1/auth/pat` 校验后写入该用户的 Host 凭据。令牌不进 URL/聊天/records/日志。
+
+无论哪种方式：令牌 per-user、owner = 宿主校验的 `PluginActor.user_id`、刷新/撤销在对方支持时执行、失败关闭。未激活用户 claim/ticket 返回 `ACTIVATION_REQUIRED`（需要激活/重新激活）。
 
 ## 票据 `POST {base}/v1/tickets`
 
-Bearer = 连接凭据（服务身份，不是用户 SSO）。
+Bearer = **当前用户**访问令牌（不是连接服务凭据）。未激活或令牌失效 → 401。
 
 ```json
 {
@@ -134,7 +174,7 @@ iframe `postMessage` 仅为提示，不可信。权威状态来自下一节。
 
 ## 收据 `POST {base}/v1/interactions/{id}`
 
-插件用连接凭据拉取：
+插件用 **用户令牌** 拉取：
 
 ```json
 {
@@ -176,8 +216,13 @@ sequenceDiagram
 | `connections.list` | authenticated | 元数据列表，无密钥 |
 | `connections.save` | admin | 增改连接 + 凭据 |
 | `connections.delete` | admin | 停用并删除凭据 |
-| `connections.test` | admin | 非破坏握手 |
-| `interactions.claim` | authenticated | 绑定 callId↔用户↔线程 |
+| `connections.test` | admin | 非破坏握手；报告 `user_auth_methods` |
+| `activations.start` | authenticated | OAuth2 开始 / 其它方式提示凭据表单 |
+| `activations.complete` | authenticated | 消费 OAuth `state`（一次性） |
+| `activations.native` | authenticated | 业务账号换用户令牌 |
+| `activations.pat` | authenticated | 校验并保存 PAT |
+| `activations.disconnect` | authenticated | 撤销本用户令牌 |
+| `interactions.claim` | authenticated | 绑定 callId↔用户↔线程；需已激活 |
 | `interactions.get` | authenticated | 拉收据并覆盖状态 |
 | `interactions.cancel` | authenticated | 仅草稿 |
 | `tickets.issue` | authenticated | 一次性页面票 |

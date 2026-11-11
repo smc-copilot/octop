@@ -97,6 +97,121 @@ function FormFrame(props) {
   });
 }
 
+function methodLabel(method) {
+  if (method === "native_login") return "业务账号登录";
+  if (method === "personal_access_token") return "个人访问令牌";
+  return "OAuth2 / OIDC";
+}
+
+function ActivationPanel(props) {
+  const { host, connection, onChanged } = props;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [nativeUser, setNativeUser] = useState("");
+  const [nativePass, setNativePass] = useState("");
+  const [pat, setPat] = useState("");
+  if (!connection || !connection.connection_id) return null;
+  const status = connection.activation_status || "inactive";
+  const method = connection.user_auth_method || "oauth2";
+  const active = status === "active";
+
+  const finish = async (job) => {
+    setBusy(true);
+    setError("");
+    try {
+      await job();
+      setNativePass("");
+      setPat("");
+      if (onChanged) await onChanged();
+    } catch (err) {
+      setError(String(err && err.message ? err.message : err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startOauth = () =>
+    finish(async () => {
+      const started = await runAction(host, "activations.start", { connection_id: connection.connection_id }, false);
+      if (!started.authorization_url || !started.state) throw new Error("authorization_url missing");
+      const popup = window.open(started.authorization_url, "bui-oauth", "width=480,height=720");
+      const deadline = Date.now() + 5 * 60 * 1000;
+      while (Date.now() < deadline) {
+        const done = await runAction(host, "activations.complete", { state: started.state }, false);
+        if (done && done.status === "active") {
+          if (popup && !popup.closed) popup.close();
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+      }
+      throw new Error("activation timed out");
+    });
+
+  const submitNative = () =>
+    finish(async () => {
+      await runAction(
+        host,
+        "activations.native",
+        { connection_id: connection.connection_id, username: nativeUser, password: nativePass },
+        false,
+      );
+    });
+
+  const submitPat = () =>
+    finish(async () => {
+      await runAction(
+        host,
+        "activations.pat",
+        { connection_id: connection.connection_id, access_token: pat },
+        false,
+      );
+    });
+
+  const disconnect = () =>
+    finish(async () => {
+      await runAction(host, "activations.disconnect", { connection_id: connection.connection_id }, false);
+    });
+
+  return _jsxs("div", {
+    "data-activation-panel": "1",
+    style: { marginTop: 8, fontSize: 12 },
+    children: [
+      _jsxs("div", {
+        children: [
+          "用户授权：",
+          methodLabel(method),
+          " · ",
+          active ? "已激活" : "需要激活/重新激活",
+        ],
+      }),
+      error ? _jsx("div", { style: { color: "#b91c1c", marginTop: 4 }, children: error }) : null,
+      active
+        ? _jsxs("div", {
+            children: [
+              _jsx("button", { type: "button", style: btn(false), disabled: busy, onClick: method === "oauth2" ? startOauth : method === "native_login" ? submitNative : submitPat, children: "重新连接" }),
+              _jsx("button", { type: "button", style: btn(false), disabled: busy, onClick: disconnect, children: "断开" }),
+            ],
+          })
+        : method === "oauth2"
+          ? _jsx("button", { type: "button", style: btn(true), disabled: busy, onClick: startOauth, children: "激活（OAuth2）" })
+          : method === "native_login"
+            ? _jsxs("div", {
+                children: [
+                  _jsx("input", { placeholder: "业务账号", autoComplete: "username", value: nativeUser, onChange: (e) => setNativeUser(e.target.value), style: { display: "block", width: "100%", marginTop: 6 } }),
+                  _jsx("input", { type: "password", placeholder: "密码（不保存）", autoComplete: "current-password", value: nativePass, onChange: (e) => setNativePass(e.target.value), style: { display: "block", width: "100%", marginTop: 6 } }),
+                  _jsx("button", { type: "button", style: btn(true), disabled: busy || !nativeUser || !nativePass, onClick: submitNative, children: "登录并激活" }),
+                ],
+              })
+            : _jsxs("div", {
+                children: [
+                  _jsx("input", { type: "password", placeholder: "个人访问令牌（不回显）", autoComplete: "off", value: pat, onChange: (e) => setPat(e.target.value), style: { display: "block", width: "100%", marginTop: 6 } }),
+                  _jsx("button", { type: "button", style: btn(true), disabled: busy || pat.length < 8, onClick: submitPat, children: "保存令牌并激活" }),
+                ],
+              }),
+    ],
+  });
+}
+
 function BusinessCard(props) {
   const dark = (props.host.getToolContext() || {}).theme === "dark";
   const data = props.data && typeof props.data === "object" ? props.data : {};
@@ -109,6 +224,15 @@ function BusinessCard(props) {
   const [connections, setConnections] = useState([]);
   const [connectionId, setConnectionId] = useState(data.connectionId || "");
   const pollRef = useRef(null);
+  const selected = connections.find((c) => c.connection_id === connectionId) || null;
+  const activated = selected && selected.activation_status === "active";
+
+  const reloadConnections = useCallback(async () => {
+    const res = await runAction(host, "connections.list", {}, false);
+    const rows = (res && res.connections) || [];
+    setConnections(rows);
+    return rows;
+  }, [host]);
 
   const hydrate = useCallback(
     async (interactionId) => {
@@ -139,10 +263,8 @@ function BusinessCard(props) {
   );
 
   useEffect(() => {
-    runAction(host, "connections.list", {}, false)
-      .then((res) => {
-        const rows = (res && res.connections) || [];
-        setConnections(rows);
+    reloadConnections()
+      .then((rows) => {
         if (!connectionId && rows[0]) setConnectionId(rows[0].connection_id);
       })
       .catch(() => {});
@@ -198,6 +320,10 @@ function BusinessCard(props) {
     setError("");
     if (!connectionId) {
       setError("Select an approved connection");
+      return;
+    }
+    if (!activated) {
+      setError("需要激活/重新激活");
       return;
     }
     try {
@@ -301,7 +427,10 @@ function BusinessCard(props) {
                 style: { marginTop: 8, padding: 4 },
                 children: [_jsx("option", { value: "", children: "选择已批准连接" }), ...connections.map((c) => _jsx("option", { value: c.connection_id, children: c.display_name }, c.connection_id))],
               }),
-              _jsx("button", { type: "button", style: btn(true), onClick: () => claimAndOpen("edit"), children: "核对并编辑" }),
+              _jsx(ActivationPanel, { host, connection: selected, onChanged: reloadConnections }),
+              activated
+                ? _jsx("button", { type: "button", style: btn(true), onClick: () => claimAndOpen("edit"), children: "核对并编辑" })
+                : _jsx("div", { style: { color: "#b45309", fontSize: 12, marginTop: 8 }, children: "需要激活/重新激活后才能打开表单。" }),
               _jsx("button", { type: "button", style: btn(false), onClick: cancel, children: "取消" }),
             ],
           })
@@ -341,6 +470,14 @@ function ConfigCard(props) {
     tls_ca_pem: "",
     instance_issuer: "",
     enabled: true,
+    user_auth_method: "oauth2",
+    oauth_discovery_url: "",
+    oauth_authorize_url: "",
+    oauth_token_url: "",
+    oauth_revoke_url: "",
+    oauth_client_id: "",
+    oauth_client_secret: "",
+    oauth_scopes: "openid profile",
   });
 
   const reload = async () => {
@@ -365,12 +502,20 @@ function ConfigCard(props) {
       private_allow: form.private_allow ? form.private_allow.split(/\s+/).filter(Boolean) : [],
       instance_issuer: form.instance_issuer || undefined,
       enabled: form.enabled,
+      user_auth_method: form.user_auth_method,
+      oauth_discovery_url: form.oauth_discovery_url || undefined,
+      oauth_authorize_url: form.oauth_authorize_url || undefined,
+      oauth_token_url: form.oauth_token_url || undefined,
+      oauth_revoke_url: form.oauth_revoke_url || undefined,
+      oauth_client_id: form.oauth_client_id || undefined,
+      oauth_scopes: form.oauth_scopes || undefined,
     };
     if (form.secret) payload.secret = form.secret;
-      if (form.tls_ca_pem) payload.tls_ca_pem = form.tls_ca_pem;
+    if (form.tls_ca_pem) payload.tls_ca_pem = form.tls_ca_pem;
+    if (form.oauth_client_secret) payload.oauth_client_secret = form.oauth_client_secret;
     try {
       await runAction(host, "connections.save", payload, false);
-      setForm((prev) => ({ ...prev, secret: "" }));
+      setForm((prev) => ({ ...prev, secret: "", oauth_client_secret: "" }));
       await reload();
     } catch (err) {
       setError(String(err && err.message ? err.message : err));
@@ -392,7 +537,7 @@ function ConfigCard(props) {
     "data-business-ui-config": "1",
     children: [
       _jsx("div", { style: { fontWeight: 700 }, children: "Business UI 连接" }),
-      _jsx("div", { style: { fontSize: 12, opacity: 0.8, marginTop: 4 }, children: "密钥只出现在本表单并经已认证 action 写入 Host 凭据，不会进聊天或 plugin_records。" }),
+      _jsx("div", { style: { fontSize: 12, opacity: 0.8, marginTop: 4 }, children: "连接密钥与用户令牌只经已认证 action 写入 Host 凭据，不会进 URL/聊天/plugin_records。每位用户单独激活。" }),
       issuer ? _jsxs("div", { style: { fontSize: 12, marginTop: 6 }, children: ["实例 issuer：", issuer] }) : null,
       error ? _jsx("div", { style: { color: "#b91c1c", fontSize: 12 }, children: error }) : null,
       rows.map((row) =>
@@ -400,7 +545,8 @@ function ConfigCard(props) {
           style: { marginTop: 10, paddingTop: 8, borderTop: "1px solid #e2e8f0", fontSize: 13 },
           children: [
             _jsx("strong", { children: row.display_name }),
-            _jsxs("div", { children: [row.base_url, " · ", row.auth_method, row.enabled ? " · 启用" : " · 停用"] }),
+            _jsxs("div", { children: [row.base_url, " · 服务身份 ", row.auth_method, " · 用户授权 ", methodLabel(row.user_auth_method), row.enabled ? " · 启用" : " · 停用"] }),
+            _jsx(ActivationPanel, { host, connection: row, onChanged: reload }),
             canManage
               ? _jsxs("div", {
                   children: [
@@ -419,8 +565,22 @@ function ConfigCard(props) {
               _jsx("input", { placeholder: "显示名", value: form.display_name, onChange: (e) => setForm({ ...form, display_name: e.target.value }), style: { display: "block", width: "100%", marginTop: 6 } }),
               _jsx("input", { placeholder: "HTTPS Adapter 地址", value: form.base_url, onChange: (e) => setForm({ ...form, base_url: e.target.value }), style: { display: "block", width: "100%", marginTop: 6 } }),
               _jsx("input", { placeholder: "本实例 issuer https://octop.example.com", value: form.instance_issuer, onChange: (e) => setForm({ ...form, instance_issuer: e.target.value }), style: { display: "block", width: "100%", marginTop: 6 } }),
-              _jsxs("select", { value: form.auth_method, onChange: (e) => setForm({ ...form, auth_method: e.target.value }), style: { marginTop: 6 }, children: [_jsx("option", { value: "api_token", children: "可复用 API token" }), _jsx("option", { value: "authorization_code", children: "一次性授权码" })] }),
-              _jsx("input", { type: "password", autoComplete: "new-password", placeholder: "密钥 / 授权码（不回显）", value: form.secret, onChange: (e) => setForm({ ...form, secret: e.target.value }), style: { display: "block", width: "100%", marginTop: 6 } }),
+              _jsxs("select", { value: form.auth_method, onChange: (e) => setForm({ ...form, auth_method: e.target.value }), style: { marginTop: 6 }, children: [_jsx("option", { value: "api_token", children: "服务身份：可复用 API token" }), _jsx("option", { value: "authorization_code", children: "服务身份：一次性授权码" })] }),
+              _jsx("input", { type: "password", autoComplete: "new-password", placeholder: "服务密钥 / 授权码（不回显）", value: form.secret, onChange: (e) => setForm({ ...form, secret: e.target.value }), style: { display: "block", width: "100%", marginTop: 6 } }),
+              _jsxs("select", { value: form.user_auth_method, onChange: (e) => setForm({ ...form, user_auth_method: e.target.value }), style: { marginTop: 6, display: "block" }, children: [_jsx("option", { value: "oauth2", children: "用户授权：标准 OAuth2/OIDC + PKCE" }), _jsx("option", { value: "native_login", children: "用户授权：业务系统账号登录" }), _jsx("option", { value: "personal_access_token", children: "用户授权：个人访问令牌" })] }),
+              form.user_auth_method === "oauth2"
+                ? _jsxs("div", {
+                    children: [
+                      _jsx("input", { placeholder: "OAuth discovery URL（可选 RFC 8414）", value: form.oauth_discovery_url, onChange: (e) => setForm({ ...form, oauth_discovery_url: e.target.value }), style: { display: "block", width: "100%", marginTop: 6 } }),
+                      _jsx("input", { placeholder: "Authorize URL（无 discovery 时必填）", value: form.oauth_authorize_url, onChange: (e) => setForm({ ...form, oauth_authorize_url: e.target.value }), style: { display: "block", width: "100%", marginTop: 6 } }),
+                      _jsx("input", { placeholder: "Token URL（无 discovery 时必填）", value: form.oauth_token_url, onChange: (e) => setForm({ ...form, oauth_token_url: e.target.value }), style: { display: "block", width: "100%", marginTop: 6 } }),
+                      _jsx("input", { placeholder: "Revocation URL（可选）", value: form.oauth_revoke_url, onChange: (e) => setForm({ ...form, oauth_revoke_url: e.target.value }), style: { display: "block", width: "100%", marginTop: 6 } }),
+                      _jsx("input", { placeholder: "OAuth client id", value: form.oauth_client_id, onChange: (e) => setForm({ ...form, oauth_client_id: e.target.value }), style: { display: "block", width: "100%", marginTop: 6 } }),
+                      _jsx("input", { type: "password", autoComplete: "new-password", placeholder: "OAuth client secret（不回显）", value: form.oauth_client_secret, onChange: (e) => setForm({ ...form, oauth_client_secret: e.target.value }), style: { display: "block", width: "100%", marginTop: 6 } }),
+                      _jsx("input", { placeholder: "scopes", value: form.oauth_scopes, onChange: (e) => setForm({ ...form, oauth_scopes: e.target.value }), style: { display: "block", width: "100%", marginTop: 6 } }),
+                    ],
+                  })
+                : _jsx("div", { style: { fontSize: 12, marginTop: 6, opacity: 0.8 }, children: form.user_auth_method === "native_login" ? "用户在插件表单输入业务账号；密码只经 action 交给 Adapter，插件不落盘。" : "用户在插件表单粘贴个人访问令牌；令牌写入 Host 凭据，不进 URL/聊天。" }),
               _jsx("textarea", { placeholder: "可选：内网适配器 TLS CA PEM", value: form.tls_ca_pem, onChange: (e) => setForm({ ...form, tls_ca_pem: e.target.value }), style: { display: "block", width: "100%", marginTop: 6, minHeight: 64 } }),
               _jsx("input", { placeholder: "额外 origin（空格分隔）", value: form.extra_origins, onChange: (e) => setForm({ ...form, extra_origins: e.target.value }), style: { display: "block", width: "100%", marginTop: 6 } }),
               _jsx("input", { placeholder: "私有网段例外 CIDR/host", value: form.private_allow, onChange: (e) => setForm({ ...form, private_allow: e.target.value }), style: { display: "block", width: "100%", marginTop: 6 } }),

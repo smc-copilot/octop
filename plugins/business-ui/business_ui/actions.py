@@ -8,6 +8,12 @@ from typing import Any
 from octop.infra.agents.plugins.host_contracts import PluginActor
 
 from .models import (
+    ActivationCompleteInput,
+    ActivationDisconnectOutput,
+    ActivationNativeInput,
+    ActivationPatInput,
+    ActivationStartOutput,
+    ActivationStatusOutput,
     ClaimInput,
     ClaimOutput,
     ConnectionDeleteOutput,
@@ -61,6 +67,31 @@ def register_actions(facade: Any) -> Sequence[tuple[str, type, type, Any, str, s
 
     async def tickets_issue(actor: PluginActor, payload: TicketIssueInput) -> TicketIssueOutput:
         return await service.issue_ticket(actor, payload)
+
+    async def activations_start(
+        actor: PluginActor, payload: ConnectionIdInput
+    ) -> ActivationStartOutput:
+        return await service.start_activation(actor, payload)
+
+    async def activations_complete(
+        actor: PluginActor, payload: ActivationCompleteInput
+    ) -> ActivationStatusOutput:
+        return await service.complete_activation(actor, payload)
+
+    async def activations_native(
+        actor: PluginActor, payload: ActivationNativeInput
+    ) -> ActivationStatusOutput:
+        return await service.native_activation(actor, payload)
+
+    async def activations_pat(
+        actor: PluginActor, payload: ActivationPatInput
+    ) -> ActivationStatusOutput:
+        return await service.pat_activation(actor, payload)
+
+    async def activations_disconnect(
+        actor: PluginActor, payload: ConnectionIdInput
+    ) -> ActivationDisconnectOutput:
+        return await service.disconnect_activation(actor, payload)
 
     return (
         (
@@ -125,6 +156,46 @@ def register_actions(facade: Any) -> Sequence[tuple[str, type, type, Any, str, s
             TicketIssueOutput,
             tickets_issue,
             "Issue one-time page ticket",
+            "authenticated",
+        ),
+        (
+            "activations.start",
+            ConnectionIdInput,
+            ActivationStartOutput,
+            activations_start,
+            "Start per-user activation",
+            "authenticated",
+        ),
+        (
+            "activations.complete",
+            ActivationCompleteInput,
+            ActivationStatusOutput,
+            activations_complete,
+            "Complete OAuth2 activation",
+            "authenticated",
+        ),
+        (
+            "activations.native",
+            ActivationNativeInput,
+            ActivationStatusOutput,
+            activations_native,
+            "Activate with native account login",
+            "authenticated",
+        ),
+        (
+            "activations.pat",
+            ActivationPatInput,
+            ActivationStatusOutput,
+            activations_pat,
+            "Activate with a personal access token",
+            "authenticated",
+        ),
+        (
+            "activations.disconnect",
+            ConnectionIdInput,
+            ActivationDisconnectOutput,
+            activations_disconnect,
+            "Revoke this user's activation",
             "authenticated",
         ),
     )

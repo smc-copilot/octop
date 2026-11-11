@@ -29,12 +29,11 @@ class AdapterError(Exception):
         self.status = status
 
 
-def _headers(token: str) -> dict[str, str]:
-    return {
-        "authorization": f"Bearer {token}",
-        "accept": "application/json",
-        "content-type": "application/json",
-    }
+def _headers(token: str, content_type: str) -> dict[str, str]:
+    headers = {"accept": "application/json", "content-type": content_type}
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    return headers
 
 
 def build_client(*, tls_ca_pem: str | None) -> httpx.Client:
@@ -65,13 +64,14 @@ def authorize_url(
     return url
 
 
-def request_json(
+def _send(
     client: httpx.Client,
     method: str,
     url: str,
     *,
     token: str,
-    body: Mapping[str, Any] | None = None,
+    content: bytes | None,
+    content_type: str,
     base_url: str,
     extra_origins: list[str],
     private_exceptions: tuple[Any, ...],
@@ -86,8 +86,8 @@ def request_json(
         response = client.request(
             method,
             url,
-            headers=_headers(token),
-            content=None if body is None else json.dumps(body).encode("utf-8"),
+            headers=_headers(token, content_type),
+            content=content,
         )
     except httpx.TimeoutException as exc:
         raise AdapterError("timeout", "adapter request timed out", status=504) from exc
@@ -108,6 +108,55 @@ def request_json(
     except ValueError:
         parsed = None
     return response.status_code, parsed, text
+
+
+def request_json(
+    client: httpx.Client,
+    method: str,
+    url: str,
+    *,
+    token: str,
+    body: Mapping[str, Any] | None = None,
+    base_url: str,
+    extra_origins: list[str],
+    private_exceptions: tuple[Any, ...],
+) -> tuple[int, dict[str, Any] | None, str]:
+    return _send(
+        client,
+        method,
+        url,
+        token=token,
+        content=None if body is None else json.dumps(body).encode("utf-8"),
+        content_type="application/json",
+        base_url=base_url,
+        extra_origins=extra_origins,
+        private_exceptions=private_exceptions,
+    )
+
+
+def request_form(
+    client: httpx.Client,
+    url: str,
+    *,
+    token: str,
+    fields: Mapping[str, str],
+    base_url: str,
+    extra_origins: list[str],
+    private_exceptions: tuple[Any, ...],
+) -> tuple[int, dict[str, Any] | None, str]:
+    from urllib.parse import urlencode
+
+    return _send(
+        client,
+        "POST",
+        url,
+        token=token,
+        content=urlencode(dict(fields)).encode("utf-8"),
+        content_type="application/x-www-form-urlencoded",
+        base_url=base_url,
+        extra_origins=extra_origins,
+        private_exceptions=private_exceptions,
+    )
 
 
 def handshake_url(base_url: str) -> str:
@@ -141,6 +190,15 @@ def evaluate_handshake(body: dict[str, Any] | None) -> tuple[bool, str | None, l
     missing = [name for name in required if features.get(name) is not True]
     if missing:
         return False, "missing_features:" + ",".join(missing), missing
+    methods = features.get("user_auth_methods")
+    allowed = {"oauth2", "native_login", "personal_access_token"}
+    if not isinstance(methods, list) or not methods:
+        return False, "missing_user_auth_methods", missing
+    unknown = [str(item) for item in methods if item not in allowed]
+    if unknown:
+        return False, "unknown_user_auth_methods:" + ",".join(unknown), missing
+    if "oauth2" in methods and features.get("oauth_pkce_s256") is not True:
+        return False, "oauth2_requires_pkce_s256", missing
     for key in ("ticket_path", "redeem_path", "interaction_path", "resolve_path"):
         if not isinstance(body.get(key), str) or not body[key].startswith("/"):
             return False, f"missing_endpoint:{key}", missing

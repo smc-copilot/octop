@@ -20,6 +20,7 @@ from octop.infra.agents.plugins.host_contracts import (
 )
 
 from . import PROTOCOL
+from .activation import ActivationMixin
 from .models import (
     ClaimInput,
     ClaimOutput,
@@ -95,6 +96,14 @@ def _public_connection(payload: dict[str, Any], *, include_admin: bool) -> dict[
         "secret_configured": bool(payload.get("credential_id")),
         "extra_origins": list(payload.get("extra_origins") or []),
         "private_allow": list(payload.get("private_allow") or []),
+        "user_auth_method": payload.get("user_auth_method") or "oauth2",
+        "oauth_authorize_url": payload.get("oauth_authorize_url"),
+        "oauth_token_url": payload.get("oauth_token_url"),
+        "oauth_revoke_url": payload.get("oauth_revoke_url"),
+        "oauth_discovery_url": payload.get("oauth_discovery_url"),
+        "oauth_client_id": payload.get("oauth_client_id"),
+        "oauth_scopes": payload.get("oauth_scopes"),
+        "oauth_client_secret_configured": bool(payload.get("oauth_client_secret_configured")),
     }
     if include_admin:
         row["revision"] = payload.get("revision", 0)
@@ -102,7 +111,7 @@ def _public_connection(payload: dict[str, Any], *, include_admin: bool) -> dict[
     return row
 
 
-class BusinessUiService:
+class BusinessUiService(ActivationMixin):
     def __init__(self, facade: Any) -> None:
         self._facade = facade
 
@@ -178,7 +187,9 @@ class BusinessUiService:
                 continue
             if not can_manage and not payload.get("enabled"):
                 continue
-            items.append(_public_connection(payload, include_admin=can_manage))
+            public = _public_connection(payload, include_admin=can_manage)
+            public.update(await self.activation_public(actor, str(payload["connection_id"])))
+            items.append(public)
         return ConnectionListOutput(
             instance_issuer=issuer, connections=items, can_manage=can_manage
         )
@@ -196,8 +207,25 @@ class BusinessUiService:
             for extra in payload.extra_origins:
                 validate_https_url_syntax(extra)
                 resolve_and_authorize(extra, private_exceptions=exceptions)
+            for url in (
+                payload.oauth_discovery_url,
+                payload.oauth_authorize_url,
+                payload.oauth_token_url,
+                payload.oauth_revoke_url,
+            ):
+                if url:
+                    validate_https_url_syntax(url)
+                    resolve_and_authorize(url, private_exceptions=exceptions)
         except UnsafeUrl as exc:
             raise _err("UNSAFE_URL", str(exc)) from exc
+        if payload.user_auth_method == "oauth2":
+            has_discovery = bool(payload.oauth_discovery_url)
+            has_pair = bool(payload.oauth_authorize_url and payload.oauth_token_url)
+            if not payload.oauth_client_id or not (has_discovery or has_pair):
+                raise _err(
+                    "OAUTH_UNCONFIGURED",
+                    "oauth2 requires client_id and discovery or authorize+token URLs",
+                )
         connection_id = payload.connection_id or f"conn-{uuid4()}"
         existing = await self._facade.get_record(CONNECTIONS, connection_id)
         expected = existing.revision if existing is not None else 0
@@ -216,14 +244,25 @@ class BusinessUiService:
         credential_revision = (
             int(existing.payload.get("credential_revision") or 0) if existing else 0
         )
-        if payload.secret:
+        existing_bundle: dict[str, Any] = {}
+        if credential_id:
+            try:
+                existing_bundle = await self._facade.resolve_credential(
+                    str(credential_id), owner_id
+                )
+            except PluginHostError:
+                existing_bundle = {}
+        if payload.secret or payload.oauth_client_secret or payload.tls_ca_pem:
             new_id = await self._facade.stage_credential(
                 owner_id,
                 {
                     "auth_method": payload.auth_method,
-                    "secret": payload.secret,
+                    "secret": payload.secret or existing_bundle.get("secret"),
                     "single_use": payload.auth_method == "authorization_code",
-                    "tls_ca_pem": payload.tls_ca_pem,
+                    "tls_ca_pem": payload.tls_ca_pem or existing_bundle.get("tls_ca_pem"),
+                    "oauth_client_id": payload.oauth_client_id,
+                    "oauth_client_secret": payload.oauth_client_secret
+                    or existing_bundle.get("oauth_client_secret"),
                 },
             )
             activations.append(CredentialActivation(new_id, owner_id, 1))
@@ -250,6 +289,16 @@ class BusinessUiService:
             "credential_owner_user_id": credential_owner,
             "credential_revision": credential_revision,
             "instance_issuer": issuer,
+            "user_auth_method": payload.user_auth_method,
+            "oauth_discovery_url": payload.oauth_discovery_url,
+            "oauth_authorize_url": payload.oauth_authorize_url,
+            "oauth_token_url": payload.oauth_token_url,
+            "oauth_revoke_url": payload.oauth_revoke_url,
+            "oauth_client_id": payload.oauth_client_id,
+            "oauth_scopes": payload.oauth_scopes,
+            "oauth_client_secret_configured": bool(
+                payload.oauth_client_secret or existing_bundle.get("oauth_client_secret")
+            ),
         }
         rows = await self._commit(
             [RecordWrite(CONNECTIONS, connection_id, owner_id, record_payload, expected)],
@@ -403,6 +452,25 @@ class BusinessUiService:
                 protocol=str((body or {}).get("protocol") or "") or None,
                 unsupported_reason=reason,
             )
+        methods = list((body.get("features") or {}).get("user_auth_methods") or [])
+        configured = str(conn.get("user_auth_method") or "oauth2")
+        oauth_ok = configured in methods
+        stages.append(
+            HandshakeStage(
+                name="user_auth_methods",
+                ok=oauth_ok,
+                detail="supported="
+                + ",".join(str(m) for m in methods)
+                + f"; configured={configured}",
+            )
+        )
+        if not oauth_ok:
+            return ConnectionTestOutput(
+                ok=False,
+                stages=stages,
+                protocol=PROTOCOL,
+                unsupported_reason="user_auth_method_unsupported",
+            )
         return ConnectionTestOutput(ok=True, stages=stages, protocol=PROTOCOL)
 
     def _require_scope(self, actor: PluginActor) -> tuple[str, str]:
@@ -430,6 +498,7 @@ class BusinessUiService:
         if "/" in payload.form_ref or payload.form_ref.lower().startswith("http"):
             raise _err("INVALID_FORM_REF", "formRef must be a registry name, not a URL")
         conn = await self._load_enabled(payload.connection_id)
+        await self._user_access_token(actor, conn)
         issuer = str(conn.get("instance_issuer") or await self.instance_issuer())
         if not issuer:
             raise _err("INSTANCE_UNCONFIGURED", "instance issuer is not configured", 403)
@@ -584,11 +653,7 @@ class BusinessUiService:
             raise _err("INVALID", "detail is only available after submit")
         conn = await self._load_enabled(str(data["connection_id"]))
         bundle = await self._secret_bundle(conn)
-        if bundle.get("single_use") and not bundle.get("exchanged"):
-            # authorization_code authenticates the adapter connection once.
-            bundle = {**bundle, "exchanged": True, "redeemed": True}
-            # Keep using the in-memory token for this request; rotation is admin-driven.
-        token = str(bundle.get("secret") or "")
+        token = await self._user_access_token(actor, conn)
         issuer = str(data.get("instance_issuer") or await self.instance_issuer())
         exceptions = parse_exception_list(list(conn.get("private_allow") or []))
         extra = list(conn.get("extra_origins") or [])
@@ -651,7 +716,10 @@ class BusinessUiService:
         issuer: str,
     ) -> dict[str, Any]:
         bundle = await self._secret_bundle(conn)
-        token = str(bundle.get("secret") or "")
+        try:
+            token = await self._user_access_token(actor, conn)
+        except PluginActionError:
+            return data
         exceptions = parse_exception_list(list(conn.get("private_allow") or []))
         extra = list(conn.get("extra_origins") or [])
         client = build_client(tls_ca_pem=bundle.get("tls_ca_pem"))

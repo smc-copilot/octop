@@ -58,6 +58,46 @@ def test_html_login_pages_are_unsupported_not_success() -> None:
     assert why == "incompatible_protocol"
 
 
+def _handshake(**features: object) -> dict:
+    body = {
+        "protocol": "business-ui.v1",
+        "kind": "business-ui-adapter",
+        "features": {
+            "form_registry": True,
+            "tickets": True,
+            "receipts": True,
+            "interactions": True,
+            "user_auth_methods": ["oauth2"],
+            "oauth_pkce_s256": True,
+            **features,
+        },
+        "ticket_path": "/v1/tickets",
+        "redeem_path": "/v1/tickets/redeem",
+        "interaction_path": "/v1/interactions/{id}",
+        "resolve_path": "/v1/forms/resolve",
+    }
+    return body
+
+
+def test_handshake_requires_user_auth_methods_and_pkce() -> None:
+    ok, why, _ = evaluate_handshake(_handshake())
+    assert ok is True
+    missing = _handshake()
+    missing["features"].pop("user_auth_methods")
+    ok, why, _ = evaluate_handshake(missing)
+    assert ok is False
+    assert why == "missing_user_auth_methods"
+    no_pkce = _handshake(oauth_pkce_s256=False)
+    ok, why, _ = evaluate_handshake(no_pkce)
+    assert ok is False
+    assert why == "oauth2_requires_pkce_s256"
+    unknown = _handshake()
+    unknown["features"]["user_auth_methods"] = ["casdoor"]
+    ok, why, _ = evaluate_handshake(unknown)
+    assert ok is False
+    assert why and why.startswith("unknown_user_auth_methods")
+
+
 def test_dns_rebinding_to_metadata_is_denied(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_getaddrinfo(host: str, port: int, *args: object, **kwargs: object) -> list[tuple]:
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", port))]

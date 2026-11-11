@@ -16,6 +16,7 @@
 - `callId` 绑定哈希含 agent+thread；跨用户/跨线程拒绝
 - namespaced `issuer|user_id`
 - 密钥只经配置卡 → action → Host 凭据；记录与列表只有元数据
+- 用户令牌 per-user Host 凭据；OAuth `state`/PKCE 一次性；跨用户/重放/过期失败关闭；native 密码不落盘
 - 出站 SSRF 策略；metadata 不可 allowlist；无私网一键放行
 - 票据一次性；postMessage 校验 origin/source/interaction/nonce 仍只是提示
 - `allowedActions` 仅 UI；服务端再授权
