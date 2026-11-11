@@ -1,0 +1,199 @@
+"""Pydantic action envelopes. Secrets never appear on list/get outputs."""
+
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class _Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+AuthMethod = Literal["api_token", "authorization_code"]
+UserAuthMethod = Literal["oauth2", "native_login", "personal_access_token"]
+TicketAction = Literal["edit", "save", "submit", "view_detail", "view_document"]
+ResultType = Literal["SUCCESS", "BUSINESS_REJECTED", "TECHNICAL_ERROR"]
+ResultStatus = Literal["SUCCESS", "BUSINESS_REJECTED", "FAILED", "UNKNOWN"]
+
+
+class EmptyInput(_Strict):
+    pass
+
+
+class ConnectionSaveInput(_Strict):
+    connection_id: str | None = None
+    display_name: str = Field(min_length=1, max_length=80)
+    base_url: str = Field(min_length=8, max_length=2048)
+    auth_method: AuthMethod
+    secret: str | None = Field(default=None, max_length=8192)
+    extra_origins: list[str] = Field(default_factory=list, max_length=16)
+    private_allow: list[str] = Field(default_factory=list, max_length=16)
+    tls_ca_pem: str | None = Field(default=None, max_length=32_000)
+    enabled: bool = True
+    instance_issuer: str | None = Field(default=None, max_length=512)
+    user_auth_method: UserAuthMethod = "oauth2"
+    oauth_discovery_url: str | None = Field(default=None, max_length=2048)
+    oauth_authorize_url: str | None = Field(default=None, max_length=2048)
+    oauth_token_url: str | None = Field(default=None, max_length=2048)
+    oauth_revoke_url: str | None = Field(default=None, max_length=2048)
+    oauth_client_id: str | None = Field(default=None, max_length=256)
+    oauth_client_secret: str | None = Field(default=None, max_length=8192)
+    oauth_scopes: str | None = Field(default=None, max_length=512)
+
+    @field_validator("extra_origins", "private_allow")
+    @classmethod
+    def _strip_list(cls, value: list[str]) -> list[str]:
+        return [item.strip() for item in value if item and item.strip()]
+
+
+class ConnectionIdInput(_Strict):
+    connection_id: str = Field(min_length=1, max_length=80)
+
+
+class ConnectionListOutput(_Strict):
+    instance_issuer: str
+    connections: list[dict[str, Any]]
+    can_manage: bool
+    env_sync_error: str | None = None
+    env_managed_ids: list[str] = Field(default_factory=list)
+
+
+class ConnectionSaveOutput(_Strict):
+    connection_id: str
+    revision: int
+    secret_configured: bool
+
+
+class ConnectionDeleteOutput(_Strict):
+    deleted: bool
+
+
+class HandshakeStage(_Strict):
+    name: str
+    ok: bool
+    detail: str
+
+
+class ConnectionTestOutput(_Strict):
+    ok: bool
+    stages: list[HandshakeStage]
+    protocol: str | None = None
+    unsupported_reason: str | None = None
+
+
+class ClaimInput(_Strict):
+    call_id: str = Field(min_length=8, max_length=128)
+    connection_id: str = Field(min_length=1, max_length=80)
+    document_type: str = Field(min_length=1, max_length=80)
+    form_ref: str = Field(min_length=1, max_length=120)
+    schema_version: str = Field(min_length=1, max_length=40)
+    record_id: str | None = Field(default=None, max_length=80)
+    record_version: int = Field(default=0, ge=0, le=1_000_000)
+    summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class InteractionRefInput(_Strict):
+    interaction_id: str = Field(min_length=8, max_length=80)
+    call_id: str = Field(min_length=8, max_length=128)
+
+
+class LookupInput(_Strict):
+    call_id: str = Field(min_length=8, max_length=128)
+
+
+class QueryStatusInput(InteractionRefInput):
+    operation_id: str = Field(min_length=4, max_length=80)
+
+
+class TicketIssueInput(InteractionRefInput):
+    action: TicketAction
+
+
+class TicketIssueOutput(_Strict):
+    redeem_url: str
+    ticket: str
+    expires_in: int
+    nonce: str
+    form_origin: str
+    page_mode: Literal["edit", "readonly"]
+    form_ref: str
+
+
+class OperationResult(_Strict):
+    type: ResultType
+    status: ResultStatus | None = None
+    code: str | None = None
+    message: str | None = None
+    disclosable: bool = True
+    safe_retry: bool = False
+    idempotent: bool = False
+    side_effect: bool | None = None
+
+
+class InteractionStateOutput(_Strict):
+    interaction_id: str
+    call_id: str
+    connection_id: str
+    document_type: str
+    record_id: str | None
+    form_ref: str
+    schema_version: str
+    record_version: int
+    allowed_actions: list[str]
+    submission_status: str
+    approval_status: str
+    summary: dict[str, Any]
+    last_operation_id: str | None = None
+    operation_id: str | None = None
+    last_error: str | None = None
+    navigation: dict[str, Any] | None = None
+    result: OperationResult | None = None
+    event: str | None = None
+    receipt_sequence: int = 0
+
+
+class ClaimOutput(InteractionStateOutput):
+    bind_token: str
+
+
+class CancelOutput(_Strict):
+    interaction_id: str
+    submission_status: str
+
+
+class ActivationStartOutput(_Strict):
+    connection_id: str
+    method: UserAuthMethod
+    authorization_url: str | None = None
+    state: str | None = None
+    expires_in: int | None = None
+    popup: bool = False
+    status: str
+
+
+class ActivationCompleteInput(_Strict):
+    state: str = Field(min_length=8, max_length=128)
+
+
+class ActivationNativeInput(_Strict):
+    connection_id: str = Field(min_length=1, max_length=80)
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class ActivationPatInput(_Strict):
+    connection_id: str = Field(min_length=1, max_length=80)
+    access_token: str = Field(min_length=8, max_length=8192)
+
+
+class ActivationStatusOutput(_Strict):
+    connection_id: str
+    status: str
+    method: UserAuthMethod | None = None
+    expires_at: int | None = None
+
+
+class ActivationDisconnectOutput(_Strict):
+    disconnected: bool
