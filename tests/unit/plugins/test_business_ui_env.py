@@ -540,6 +540,32 @@ async def test_unchanged_env_sync_does_not_bump_revision(
 
 
 @pytest.mark.asyncio
+async def test_unset_env_release_cas_failure_is_env_sync_error_not_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Row:
+        logical_key = "site-prod"
+        owner_user_id = 1
+        revision = 1
+        payload = {"managed_by": "env", "connection_id": "site-prod", "deleted": False}
+
+    class _Facade:
+        async def list_records(self, namespace: str) -> list[Any]:
+            return [_Row()] if namespace == "connections" else []
+
+        async def get_record(self, namespace: str, key: str) -> None:
+            return None
+
+        async def commit(self, *args: Any, **kwargs: Any) -> None:
+            raise PluginActionError("CONFLICT", "cas failed", status=409)
+
+    monkeypatch.delenv("BUSINESS_UI_BASE_URL", raising=False)
+    error = await BusinessUiService(_Facade()).sync_env_managed()
+    assert error is not None
+    assert "CONFLICT" in error
+
+
+@pytest.mark.asyncio
 async def test_unset_env_releases_to_chat_managed(
     services: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

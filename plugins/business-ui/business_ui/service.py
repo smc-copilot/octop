@@ -222,21 +222,20 @@ class BusinessUiService(ActivationMixin):
         async with self._env_lock:
             try:
                 spec = parse_env_spec(os.environ)
-            except EnvConfigError as exc:
-                self._last_env_error = f"{exc.code}: {exc.message}"
-                return self._last_env_error
-            if spec is None:
-                await self._release_env_owned(keep_id=None)
-                self._last_env_error = None
-                return None
-            try:
-                await self._apply_env_spec(spec)
-                await self._release_env_owned(keep_id=spec.connection_id)
+                if spec is None:
+                    await self._release_env_owned(keep_id=None)
+                else:
+                    await self._apply_env_spec(spec)
+                    await self._release_env_owned(keep_id=spec.connection_id)
             except EnvConfigError as exc:
                 self._last_env_error = f"{exc.code}: {exc.message}"
                 return self._last_env_error
             except PluginActionError as exc:
                 self._last_env_error = f"{exc.code}: {exc.message}"
+                return self._last_env_error
+            except PluginHostError as exc:
+                mapped = _host_err(exc)
+                self._last_env_error = f"{mapped.code}: {mapped.message}"
                 return self._last_env_error
             self._last_env_error = None
             return None
