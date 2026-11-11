@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { ChevronRight, FilePen, Globe } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import cx from "classnames";
 import type { HitlDecisionHandler } from "../../../api/types/hitl";
 import type { ChatMessage } from "../hooks/useChat";
 import {
@@ -29,6 +30,7 @@ import { collectTurnToolMedia } from "../../../utils/collectTurnToolMedia";
 import { collectTurnKnowledgeCitations } from "../../../utils/collectTurnKnowledgeCitations";
 import { KnowledgeCitationsStrip } from "./KnowledgeCitationsStrip";
 import { messageSpeakerId } from "../utils/messageGrouping";
+import { isAssistantProcessLive } from "./liveAssistantTurn";
 import styles from "../index.module.less";
 
 interface AssistantTurnViewProps {
@@ -37,6 +39,8 @@ interface AssistantTurnViewProps {
   isStreaming?: boolean;
   /** True while this assistant turn is still being generated (incl. between tool calls). */
   isTurnInProgress?: boolean;
+  /** This group sits after the latest user message, even if the session flag is idle. */
+  afterLatestUser?: boolean;
   /**
    * Speakers still generating in the session store (survives tool gaps after
    * the composer unlocks). Empty string = unlabeled host.
@@ -135,6 +139,7 @@ export default function AssistantTurnView({
   messages,
   agentId: agentIdProp,
   isTurnInProgress = false,
+  afterLatestUser = false,
   liveSpeakers = [],
   onRegenerate,
   onDisableStreamUsage,
@@ -159,7 +164,12 @@ export default function AssistantTurnView({
 
   const speakerLive = turnHasLiveSpeaker(messages, liveSpeakers);
   const hasStreamingMsg = messages.some((m) => m.status === "streaming");
-  const turnStreaming = isTurnInProgress || hasStreamingMsg || speakerLive;
+  const turnStreaming = isAssistantProcessLive({
+    isTurnInProgress,
+    afterLatestUser,
+    hasStreamingMessage: hasStreamingMsg,
+    speakerLive,
+  });
 
   const hitlLayout = useMemo(
     () => layoutAssistantTurnHitl(messages),
@@ -348,9 +358,10 @@ export default function AssistantTurnView({
         <div className={styles.turnInset}>
           <button
             type="button"
-            className={`${styles.openBrowserPrompt} ${
-              turnStreaming ? styles.openBrowserPromptActive : ""
-            }`}
+            className={cx(
+              styles.openBrowserPrompt,
+              turnStreaming && styles.openBrowserPromptActive,
+            )}
             onClick={onOpenBrowser}
             aria-label={t("chat.openBrowser")}
           >
@@ -373,9 +384,10 @@ export default function AssistantTurnView({
         <div className={styles.turnInset}>
           <button
             type="button"
-            className={`${styles.openBrowserPrompt} ${
-              turnStreaming ? styles.openBrowserPromptActive : ""
-            }`}
+            className={cx(
+              styles.openBrowserPrompt,
+              turnStreaming && styles.openBrowserPromptActive,
+            )}
             onClick={onEditFile}
             aria-label={t("chat.editFileCard", {
               count: Math.max(turnFileCount, 1),

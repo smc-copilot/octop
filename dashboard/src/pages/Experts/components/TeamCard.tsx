@@ -18,6 +18,7 @@ import {
   Users,
   Waypoints,
 } from "lucide-react";
+import cx from "classnames";
 import WorkspaceDrawer from "../../Agent/Workspace/components/WorkspaceDrawer";
 import ChannelCatalogDrawer from "./ChannelCatalogDrawer";
 import MemoryCatalogDrawer from "./MemoryCatalogDrawer";
@@ -33,6 +34,7 @@ import {
   formatAgentState,
   isAgentChatReady,
   isAgentModelConfigError,
+  shortAgentError,
 } from "../../../utils/agentError";
 import { apiErrorMessage } from "../../../utils/apiError";
 import { TEAM_ICON_NAME, teamPortraitUrl } from "../../../utils/teamAgent";
@@ -175,6 +177,8 @@ export const TeamCard = memo(function TeamCard({
   const deleteConfirm = expertDeleteConfirm(agent, t);
   const meta = getStateMeta(localState);
   const friendlyError = formatAgentError(localError, t);
+  const cardError = shortAgentError(localError, t);
+  const modelConfigError = isAgentModelConfigError(localError);
 
   const handleToggle = useCallback(
     async (checked: boolean) => {
@@ -241,14 +245,14 @@ export const TeamCard = memo(function TeamCard({
 
   return (
     <>
-      <div className={`${styles.agentCard2} ${styles.teamCard}`}>
+      <div className={cx(styles.agentCard2, styles.teamCard)}>
         <div className={styles.agentCard2Header}>
           <SharedAvatarMark
             shared={agent.is_shared}
             owned={isOwner}
             ownerName={agent.owner_username}
           >
-            <div className={`${styles.agentCard2Icon} ${styles.teamCardIcon}`}>
+            <div className={cx(styles.agentCard2Icon, styles.teamCardIcon)}>
               <ExpertIcon
                 iconUrl={teamPortraitUrl(agent.icon_url)}
                 iconName={TEAM_ICON_NAME}
@@ -337,12 +341,10 @@ export const TeamCard = memo(function TeamCard({
             >
               <div className={styles.agentCardError}>
                 <AlertCircle size={13} className={styles.agentCardErrorIcon} />
-                <span className={styles.agentCardErrorText}>
-                  {friendlyError}
-                </span>
+                <span className={styles.agentCardErrorText}>{cardError}</span>
               </div>
             </Tooltip>
-            {isAgentModelConfigError(localError) && (
+            {modelConfigError && (
               <button
                 type="button"
                 className={styles.agentCardErrorAction}
@@ -457,7 +459,7 @@ export const TeamCard = memo(function TeamCard({
           {chatReady ? (
             <button
               type="button"
-              className={`${styles.agentCard2ChatBtn} ${styles.teamCardChatBtn}`}
+              className={cx(styles.agentCard2ChatBtn, styles.teamCardChatBtn)}
               onClick={handleOpenChat}
             >
               <MessageSquare size={13} />
@@ -470,7 +472,7 @@ export const TeamCard = memo(function TeamCard({
               localState === "created") ? (
             <button
               type="button"
-              className={`${styles.agentCard2ChatBtn} ${styles.teamCardChatBtn}`}
+              className={cx(styles.agentCard2ChatBtn, styles.teamCardChatBtn)}
               disabled={isTransient || actionLoading}
               onClick={() => void handleToggle(true)}
             >
