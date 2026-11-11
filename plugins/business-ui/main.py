@@ -13,9 +13,11 @@ from .business_ui.tools import register_tools
 
 
 def setup(ctx: PluginContext) -> None:
-    register_tools(ctx)
+    bind_tools = register_tools(ctx)
 
     def register(facade: Any) -> None:
+        bind_tools(facade)
+        facade.register_read_only_tools(["business_ui_receipt"])
         for name, input_model, output_model, handler, summary, permission in register_actions(
             facade
         ):

@@ -57,6 +57,15 @@ class AdapterState:
             "native_login",
             "personal_access_token",
         ]
+        self.submit_outcome = "success"
+        self.seed_record_id: str | None = None
+        self.query_resolves_to = "success"
+        self.receipt_sequence = 0
+        self.delay_receipt = False
+
+    def next_sequence(self) -> int:
+        self.receipt_sequence += 1
+        return self.receipt_sequence
 
     def auth_ok(self, header: str) -> bool:
         if not header.startswith("Bearer "):
@@ -150,7 +159,11 @@ def make_handler(state: AdapterState) -> type[BaseHTTPRequestHandler]:
                 self._oauth_revoke()
                 return
             if not state.auth_ok(self.headers.get("authorization") or ""):
-                if path in {"/v1/tickets"} or path.startswith("/v1/interactions/"):
+                if (
+                    path in {"/v1/tickets"}
+                    or path.startswith("/v1/interactions/")
+                    or path.startswith("/v1/operations/")
+                ):
                     if state.user_ok(self.headers.get("authorization") or "") is None:
                         _json(self, 401, {"ok": False, "error": "auth_failed"})
                         return
@@ -180,6 +193,16 @@ def make_handler(state: AdapterState) -> type[BaseHTTPRequestHandler]:
                     _json(self, 401, {"ok": False, "error": "user_token_required"})
                     return
                 self._get_interaction(path.rsplit("/", 1)[-1])
+                return
+            if path.startswith("/v1/operations/"):
+                if state.user_ok(self.headers.get("authorization") or "") is None:
+                    _json(self, 401, {"ok": False, "error": "user_token_required"})
+                    return
+                rest = path[len("/v1/operations/") :]
+                if rest.endswith("/retry"):
+                    self._retry_operation(rest[: -len("/retry")])
+                    return
+                self._query_operation(rest)
                 return
             _json(self, 404, {"ok": False, "error": "not_found"})
 
@@ -218,7 +241,11 @@ def make_handler(state: AdapterState) -> type[BaseHTTPRequestHandler]:
                         "user_auth_methods": list(state.supported_user_auth_methods),
                         "oauth_authorization_code": True,
                         "oauth_pkce_s256": True,
+                        "receipt_schema_v11": True,
+                        "query_status": True,
+                        "safe_retry": True,
                     },
+                    "operation_path": "/v1/operations/{id}",
                     "ticket_path": "/v1/tickets",
                     "redeem_path": "/v1/tickets/redeem",
                     "interaction_path": "/v1/interactions/{id}",
@@ -361,6 +388,7 @@ document.getElementById('f').addEventListener('submit', async (ev) => {{
             fields = parse_qs(self.rfile.read(length).decode("utf-8") if length else "")
             interaction_id = str(session["interaction_id"])
             rec = state.interactions[interaction_id]
+            rec["interaction_id"] = interaction_id
             expected = int(session.get("record_version") or rec.get("record_version") or 0)
             if expected != int(rec.get("record_version") or 0):
                 _json(
@@ -373,26 +401,99 @@ document.getElementById('f').addEventListener('submit', async (ev) => {{
                 "headcount": (fields.get("headcount") or ["2"])[0],
                 "role": (fields.get("role") or [""])[0],
             }
-            rec["record_version"] = expected + 1
-            session["record_version"] = rec["record_version"]
+            if kind == "save":
+                rec["record_version"] = expected + 1
+                session["record_version"] = rec["record_version"]
+                rec["status"] = rec.get("status") or "draft"
+                _json(
+                    self,
+                    200,
+                    {"ok": True, "status": rec["status"], "record_version": rec["record_version"]},
+                )
+                return
+            if rec.get("status") == "submitted" and rec.get("result", {}).get("type") == "SUCCESS":
+                _json(self, 200, self._receipt_body(rec, idempotent=True))
+                return
             op_id = f"op-{secrets.token_hex(4)}"
-            if kind == "submit":
-                if rec.get("status") == "submitted":
-                    _json(
-                        self,
-                        200,
-                        {
-                            "ok": True,
-                            "idempotent": True,
-                            "operation_id": rec.get("operation_id"),
-                            "status": "submitted",
-                        },
-                    )
-                    return
+            rec["operation_id"] = op_id
+            rec["receipt_sequence"] = state.next_sequence()
+            existing_record = rec.get("record_id") or state.seed_record_id
+            outcome = state.submit_outcome
+            if outcome == "permission":
+                rec["status"] = "draft"
+                rec["result"] = {
+                    "type": "BUSINESS_REJECTED",
+                    "status": "BUSINESS_REJECTED",
+                    "code": "PERMISSION_DENIED",
+                    "message": "当前账号无权提交该单据。",
+                    "disclosable": True,
+                    "safe_retry": False,
+                    "idempotent": True,
+                    "side_effect": False,
+                }
+                rec["allowed_actions"] = ["request_permission", "close"]
+                rec["record_id"] = existing_record
+            elif outcome == "rule":
+                rec["status"] = rec.get("status") or "draft"
+                rec["result"] = {
+                    "type": "BUSINESS_REJECTED",
+                    "status": "BUSINESS_REJECTED",
+                    "code": "BUSINESS_RULE",
+                    "message": "业务规则拒绝了本次操作。",
+                    "disclosable": True,
+                    "safe_retry": False,
+                    "idempotent": True,
+                    "side_effect": False,
+                }
+                rec["record_id"] = existing_record
+                rec["allowed_actions"] = (
+                    ["view_document", "close"] if existing_record else ["close"]
+                )
+            elif outcome == "failed":
+                rec["status"] = "draft"
+                rec["result"] = {
+                    "type": "TECHNICAL_ERROR",
+                    "status": "FAILED",
+                    "code": "UPSTREAM_FAILED",
+                    "message": "提交失败，未产生业务副作用，可以安全重试。",
+                    "disclosable": True,
+                    "safe_retry": True,
+                    "idempotent": True,
+                    "side_effect": False,
+                }
+                rec["allowed_actions"] = ["retry", "close"]
+                rec["record_id"] = existing_record
+            elif outcome == "unknown":
+                rec["status"] = "pending"
+                rec["result"] = {
+                    "type": "TECHNICAL_ERROR",
+                    "status": "UNKNOWN",
+                    "code": "RESULT_UNKNOWN",
+                    "message": "结果未知，请查询状态，不要重复提交。",
+                    "disclosable": True,
+                    "safe_retry": False,
+                    "idempotent": False,
+                    "side_effect": None,
+                }
+                rec["allowed_actions"] = ["query_status", "close"]
+                rec["record_id"] = existing_record
+            else:
+                rec["record_version"] = expected + 1
+                session["record_version"] = rec["record_version"]
                 rec["status"] = "submitted"
                 rec["approval_status"] = "pending"
-                rec["record_id"] = rec.get("record_id") or f"REQ-{secrets.token_hex(3)}"
-                rec["operation_id"] = op_id
+                rec["record_id"] = existing_record or f"REQ-{secrets.token_hex(3)}"
+                rec["result"] = {
+                    "type": "SUCCESS",
+                    "status": "SUCCESS",
+                    "code": None,
+                    "message": None,
+                    "disclosable": True,
+                    "safe_retry": False,
+                    "idempotent": True,
+                    "side_effect": True,
+                }
+                rec["allowed_actions"] = ["view_document", "close"]
                 detail_ref = (
                     "recruitment.request.detail"
                     if str(rec.get("form_ref", "")).startswith("recruitment")
@@ -404,18 +505,8 @@ document.getElementById('f').addEventListener('submit', async (ev) => {{
                     "formRef": detail_ref,
                     "mode": "readonly",
                 }
-            state.operations[op_id] = rec
-            _json(
-                self,
-                200,
-                {
-                    "ok": True,
-                    "operation_id": op_id,
-                    "status": rec["status"],
-                    "record_id": rec.get("record_id"),
-                    "record_version": rec["record_version"],
-                },
-            )
+            state.operations[op_id] = dict(rec)
+            _json(self, 200, self._receipt_body(rec))
 
         def _origin(self) -> str:
             host = self.headers.get("host") or "127.0.0.1"
@@ -572,6 +663,47 @@ document.getElementById('f').addEventListener('submit', async (ev) => {{
             state.user_tokens[token] = {"sub": sub, "exp": time.time() + 86400, "refresh": None}
             _json(self, 200, {"ok": True, "expires_in": 86400})
 
+        def _receipt_body(self, rec: dict[str, Any], *, idempotent: bool = False) -> dict[str, Any]:
+            interaction_id = str(rec.get("interaction_id") or "")
+            result = rec.get("result") or {
+                "type": "SUCCESS" if rec.get("status") == "submitted" else None
+            }
+            if rec.get("status") == "submitted" and not rec.get("result"):
+                result = {
+                    "type": "SUCCESS",
+                    "status": "SUCCESS",
+                    "code": None,
+                    "message": None,
+                    "disclosable": True,
+                    "safe_retry": False,
+                    "idempotent": True,
+                    "side_effect": True,
+                }
+            return {
+                "success": True,
+                "protocol": PROTOCOL,
+                "receipt_schema": "1.1",
+                "idempotent": idempotent,
+                "interactionId": interaction_id,
+                "interaction_id": interaction_id,
+                "operationId": rec.get("operation_id"),
+                "operation_id": rec.get("operation_id"),
+                "status": rec.get("status"),
+                "approval_status": rec.get("approval_status"),
+                "record_id": rec.get("record_id"),
+                "record_version": rec.get("record_version"),
+                "receipt_sequence": rec.get("receipt_sequence") or 0,
+                "subject_sub": rec.get("subject_sub"),
+                "navigation": rec.get("navigation"),
+                "summary": rec.get("summary") or {},
+                "form_ref": rec.get("form_ref"),
+                "schema_version": rec.get("schema_version") or "1",
+                "allowed_actions": rec.get("allowed_actions"),
+                "result": result,
+                "detail_error": rec.get("detail_error"),
+                "documentType": "generic_request",
+            }
+
         def _get_interaction(self, interaction_id: str) -> None:
             body = self._read_json()
             rec = state.interactions.get(interaction_id)
@@ -581,27 +713,104 @@ document.getElementById('f').addEventListener('submit', async (ev) => {{
             if rec.get("subject_sub") != (body.get("subject") or {}).get("sub"):
                 _json(self, 403, {"ok": False, "error": "subject_mismatch"})
                 return
-            _json(
-                self,
-                200,
-                {
-                    "success": True,
-                    "interactionId": interaction_id,
-                    "interaction_id": interaction_id,
-                    "operationId": rec.get("operation_id"),
-                    "operation_id": rec.get("operation_id"),
-                    "status": rec.get("status"),
-                    "approval_status": rec.get("approval_status"),
-                    "record_id": rec.get("record_id"),
-                    "record_version": rec.get("record_version"),
-                    "subject_sub": rec.get("subject_sub"),
-                    "navigation": rec.get("navigation"),
-                    "detail_error": rec.get("detail_error"),
-                    "documentType": "recruitment_request"
-                    if str(rec.get("form_ref", "")).startswith("recruitment")
-                    else "generic_request",
-                },
-            )
+            rec["interaction_id"] = interaction_id
+            _json(self, 200, self._receipt_body(rec))
+
+        def _query_operation(self, operation_id: str) -> None:
+            rec = state.operations.get(operation_id)
+            if rec is None:
+                _json(self, 404, {"ok": False, "error": "not_found"})
+                return
+            if str((rec.get("result") or {}).get("status") or "") == "UNKNOWN":
+                resolve = state.query_resolves_to
+                rec["receipt_sequence"] = state.next_sequence()
+                if resolve == "success":
+                    rec["status"] = "submitted"
+                    rec["record_id"] = rec.get("record_id") or f"REQ-{secrets.token_hex(3)}"
+                    rec["record_version"] = int(rec.get("record_version") or 0) + 1
+                    rec["result"] = {
+                        "type": "SUCCESS",
+                        "status": "SUCCESS",
+                        "code": None,
+                        "message": None,
+                        "disclosable": True,
+                        "safe_retry": False,
+                        "idempotent": True,
+                        "side_effect": True,
+                    }
+                    rec["allowed_actions"] = ["view_document", "close"]
+                    rec["navigation"] = {
+                        "view": "detail",
+                        "form_ref": "generic.request.detail",
+                        "formRef": "generic.request.detail",
+                        "mode": "readonly",
+                    }
+                elif resolve == "rejected":
+                    rec["result"] = {
+                        "type": "BUSINESS_REJECTED",
+                        "status": "BUSINESS_REJECTED",
+                        "code": "BUSINESS_RULE",
+                        "message": "查询后确认业务拒绝。",
+                        "disclosable": True,
+                        "safe_retry": False,
+                        "idempotent": True,
+                        "side_effect": False,
+                    }
+                    rec["allowed_actions"] = ["close"]
+                else:
+                    rec["result"] = {
+                        "type": "TECHNICAL_ERROR",
+                        "status": "FAILED",
+                        "code": "UPSTREAM_FAILED",
+                        "message": "查询后确认失败，未产生副作用。",
+                        "disclosable": True,
+                        "safe_retry": True,
+                        "idempotent": True,
+                        "side_effect": False,
+                    }
+                    rec["allowed_actions"] = ["retry", "close"]
+                interaction_id = str(rec.get("interaction_id") or "")
+                if interaction_id and interaction_id in state.interactions:
+                    state.interactions[interaction_id].update(rec)
+            _json(self, 200, self._receipt_body(rec))
+
+        def _retry_operation(self, operation_id: str) -> None:
+            rec = state.operations.get(operation_id)
+            if rec is None:
+                _json(self, 404, {"ok": False, "error": "not_found"})
+                return
+            result = rec.get("result") or {}
+            if result.get("type") != "TECHNICAL_ERROR" or result.get("status") != "FAILED":
+                _json(self, 400, {"ok": False, "error": "retry_not_allowed"})
+                return
+            if not result.get("safe_retry") or result.get("side_effect") is True:
+                _json(self, 400, {"ok": False, "error": "retry_not_safe"})
+                return
+            rec["receipt_sequence"] = state.next_sequence()
+            rec["status"] = "submitted"
+            rec["record_id"] = rec.get("record_id") or f"REQ-{secrets.token_hex(3)}"
+            rec["record_version"] = int(rec.get("record_version") or 0) + 1
+            rec["result"] = {
+                "type": "SUCCESS",
+                "status": "SUCCESS",
+                "code": None,
+                "message": None,
+                "disclosable": True,
+                "safe_retry": False,
+                "idempotent": True,
+                "side_effect": True,
+            }
+            rec["allowed_actions"] = ["view_document", "close"]
+            rec["navigation"] = {
+                "view": "detail",
+                "form_ref": "generic.request.detail",
+                "formRef": "generic.request.detail",
+                "mode": "readonly",
+            }
+            interaction_id = str(rec.get("interaction_id") or "")
+            if interaction_id and interaction_id in state.interactions:
+                state.interactions[interaction_id].update(rec)
+            _json(self, 200, self._receipt_body(rec))
 
     return Handler
 

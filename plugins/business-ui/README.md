@@ -4,6 +4,8 @@
 
 本目录是 **插件 + 参考 Adapter**，不是 Octop 宿主补丁，也不是客户生产系统对接。
 
+开发分支、路径门禁、以及每次 Octop 上游升级后必须复检的宿主契约：见 [docs/branch-policy.md](docs/branch-policy.md)。
+
 ## 不是什么
 
 - 不是表单设计器、平台选择器、按单据硬编码页面
@@ -26,7 +28,7 @@ Octop 数据根目录：
 1. 使用管理员账号在 Dashboard 上传 `business-ui.zip`，或：
 2. `octop` 插件上传 API：`POST /api/plugins/upload`（管理员）。
 3. ZIP 内必须是**一个**带 `plugin.yaml` 的 `business-ui/` 目录。
-4. 重启或等待插件加载后，Agent 即可使用工具 `business_ui_draft` / `business_ui_connections`。
+4. 重启或等待插件加载后，Agent 即可使用工具 `business_ui_draft` / `business_ui_connections`；只读工具 `business_ui_receipt` 按 `interactionId` 取已核验收据，不会自动继续流程。
 
 前端 UI 为预构建 ESM：`ui/index.js` + `ui/manifest.json`（路径避开仓库根 `dist/` gitignore），无需改 Dashboard。
 
@@ -62,7 +64,8 @@ Octop 数据根目录：
 3. 侧栏 iframe：插件 `POST` 一次性 ticket（不把 token 放进 URL）兑出表单。
 4. 用户保存 ≠ 提交。提交后插件 `interactions.get` 拉收据，**同一 callId 卡变为已提交**（不追加新卡）。
 5. 侧栏导航只读正式详情。关闭侧栏再开仍走详情。历史卡重新打开查询权威最新状态。
-6. 提交成功但详情失败：卡保持已提交，提供重试。
+6. 提交后卡片变为统一 **BusinessReceiptCard**（SUCCESS / 业务拒绝 / 技术失败或 UNKNOWN），按 `interactionId` 原地更新同一 `callId`。
+7. 成功且侧栏仍在编辑态时切只读详情；否则点「查看正式单据」。历史打开走 `interactions.lookup`，不改写聊天记录。
 
 ## 参考 Adapter（协议夹具，非生产）
 

@@ -25,6 +25,8 @@ from .models import (
     EmptyInput,
     InteractionRefInput,
     InteractionStateOutput,
+    LookupInput,
+    QueryStatusInput,
     TicketIssueInput,
     TicketIssueOutput,
 )
@@ -67,6 +69,21 @@ def register_actions(facade: Any) -> Sequence[tuple[str, type, type, Any, str, s
 
     async def tickets_issue(actor: PluginActor, payload: TicketIssueInput) -> TicketIssueOutput:
         return await service.issue_ticket(actor, payload)
+
+    async def interactions_lookup(
+        actor: PluginActor, payload: LookupInput
+    ) -> InteractionStateOutput:
+        return await service.lookup(actor, payload)
+
+    async def interactions_query_status(
+        actor: PluginActor, payload: QueryStatusInput
+    ) -> InteractionStateOutput:
+        return await service.query_status(actor, payload)
+
+    async def interactions_retry(
+        actor: PluginActor, payload: InteractionRefInput
+    ) -> InteractionStateOutput:
+        return await service.retry(actor, payload)
 
     async def activations_start(
         actor: PluginActor, payload: ConnectionIdInput
@@ -140,6 +157,30 @@ def register_actions(facade: Any) -> Sequence[tuple[str, type, type, Any, str, s
             InteractionStateOutput,
             interactions_get,
             "Fetch authoritative interaction",
+            "authenticated",
+        ),
+        (
+            "interactions.lookup",
+            LookupInput,
+            InteractionStateOutput,
+            interactions_lookup,
+            "Restore interaction by host-verified callId",
+            "authenticated",
+        ),
+        (
+            "interactions.query_status",
+            QueryStatusInput,
+            InteractionStateOutput,
+            interactions_query_status,
+            "Query UNKNOWN operation status without resubmitting",
+            "authenticated",
+        ),
+        (
+            "interactions.retry",
+            InteractionRefInput,
+            InteractionStateOutput,
+            interactions_retry,
+            "Retry a confirmed side-effect-free FAILED operation",
             "authenticated",
         ),
         (

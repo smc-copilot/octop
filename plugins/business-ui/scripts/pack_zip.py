@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SKIP_DIR = {".adapter-certs", "__pycache__", ".pytest_cache", "scripts", "dist"}
+SKIP_DIR = {".adapter-certs", "__pycache__", ".pytest_cache", "scripts", "dist", "node_modules"}
 
 
 def pack(dest: Path) -> Path:

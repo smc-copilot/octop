@@ -13,7 +13,9 @@ class _Strict(BaseModel):
 
 AuthMethod = Literal["api_token", "authorization_code"]
 UserAuthMethod = Literal["oauth2", "native_login", "personal_access_token"]
-TicketAction = Literal["edit", "save", "submit", "view_detail"]
+TicketAction = Literal["edit", "save", "submit", "view_detail", "view_document"]
+ResultType = Literal["SUCCESS", "BUSINESS_REJECTED", "TECHNICAL_ERROR"]
+ResultStatus = Literal["SUCCESS", "BUSINESS_REJECTED", "FAILED", "UNKNOWN"]
 
 
 class EmptyInput(_Strict):
@@ -95,6 +97,14 @@ class InteractionRefInput(_Strict):
     call_id: str = Field(min_length=8, max_length=128)
 
 
+class LookupInput(_Strict):
+    call_id: str = Field(min_length=8, max_length=128)
+
+
+class QueryStatusInput(InteractionRefInput):
+    operation_id: str = Field(min_length=4, max_length=80)
+
+
 class TicketIssueInput(InteractionRefInput):
     action: TicketAction
 
@@ -107,6 +117,17 @@ class TicketIssueOutput(_Strict):
     form_origin: str
     page_mode: Literal["edit", "readonly"]
     form_ref: str
+
+
+class OperationResult(_Strict):
+    type: ResultType
+    status: ResultStatus | None = None
+    code: str | None = None
+    message: str | None = None
+    disclosable: bool = True
+    safe_retry: bool = False
+    idempotent: bool = False
+    side_effect: bool | None = None
 
 
 class InteractionStateOutput(_Strict):
@@ -123,8 +144,12 @@ class InteractionStateOutput(_Strict):
     approval_status: str
     summary: dict[str, Any]
     last_operation_id: str | None = None
+    operation_id: str | None = None
     last_error: str | None = None
     navigation: dict[str, Any] | None = None
+    result: OperationResult | None = None
+    event: str | None = None
+    receipt_sequence: int = 0
 
 
 class ClaimOutput(InteractionStateOutput):

@@ -1,6 +1,6 @@
 # business-ui.v1 协议
 
-版本：`business-ui.v1`  
+版本：`business-ui.v1`（收据信封 **1.1** 扩展，不替换七字段）  
 身份：Octop 插件（已认证 Host actions）↔ 外部 **Business UI Adapter**。  
 本文件描述**泛化**契约。参考实现见 `plugins/business-ui/adapter/`（夹具，不是客户 ERP）。
 
@@ -43,6 +43,42 @@ flowchart LR
 
 另外：`submissionStatus` 与 `approvalStatus` **分开**。`save` ≠ `submit`。
 
+## 收据 1.1（扩展，不替换七字段）
+
+在七字段之上增加：
+
+| 字段 | 说明 |
+|------|------|
+| `operationId` | 业务操作 id；UNKNOWN 时用于 `queryStatus` |
+| `result` | `{ type, status, code, message }` |
+| `navigation` | 只读详情等导航（`formRef`，禁止任意 URL） |
+| `summary` | 卡片摘要；敏感字段由插件掩码 |
+| `receipt_sequence` | 与 `recordVersion` 一起排序，旧收据不得覆盖新状态 |
+
+`formRef` / `schemaVersion` / `recordVersion` 仍为权威字段。
+
+### result.type
+
+| type | 卡片 | 按钮 |
+|------|------|------|
+| `SUCCESS` | 成功 | 有 `recordId` 才「查看正式单据」 |
+| `BUSINESS_REJECTED` | 业务拒绝；仅展示可披露 `code`/`message` | **禁止** 未授权的 edit/submit/detail；未执行则不显示单号；后续拒绝 **不得抹掉已有 recordId** |
+| `TECHNICAL_ERROR` | `status=FAILED`：已确认失败；仅当服务端声明 `safe_retry` 且无副作用/幂等时允许重试。`status=UNKNOWN`：不得显示成败、不得自动重提，只提供按 `operationId` 的 `queryStatus`，解析为成功/失败或继续 pending |
+
+### 统一事件
+
+`BUSINESS_OPERATION_SUCCESS` / `REJECTED` / `ERROR` / `RESOLVED`，以及 `DOCUMENT_VIEW_REQUESTED`。按 `interactionId` 更新**同一** `callId` 卡片（`patchResult`），禁止重复卡；相同 `operationId`+结果幂等；`recordVersion`/`receipt_sequence` 拒绝过期覆盖。卡片 `patchResult` 失败不影响后端记录。
+
+### 按钮
+
+只由服务端 `allowedActions` + 当前状态生成：`view_document`（需 `recordId`，出站再鉴权，经 `formRef`+`recordId` 兑票，禁止任意 URL）、`continue`、`request_permission`（仅当服务端提供）、`retry`（仅确认安全）、`query_status`（只查询不重提）、`close`。
+
+成功且侧栏对该交互处于 edit 模式时，兑 `view_detail` 切只读详情；否则卡片保留「查看正式单据」。
+
+没有 Adapter→Octop webhook。收据由已认证 action **拉取** / 有限轮询。超时标记 `TECHNICAL_ERROR/UNKNOWN`，不得静默保留过期成功态。
+
+历史恢复：`interactions.lookup`（宿主校验的 `callId`+线程）读 `plugin_records` 再拉最新收据；允许短暂草稿闪烁；**不改写** `thread_messages`。
+
 ## 主体命名空间
 
 ```json
@@ -78,15 +114,19 @@ flowchart LR
   "kind": "business-ui-adapter",
   "service": { "name": "reference-adapter", "environment": "fixture" },
   "auth": { "identity": "connection", "mode": "bearer" },
-  "features": {
+    "features": {
     "form_registry": true,
     "tickets": true,
     "receipts": true,
     "interactions": true,
     "user_auth_methods": ["oauth2", "native_login", "personal_access_token"],
     "oauth_authorization_code": true,
-    "oauth_pkce_s256": true
+    "oauth_pkce_s256": true,
+    "receipt_schema_v11": true,
+    "query_status": true,
+    "safe_retry": true
   },
+  "operation_path": "/v1/operations/{id}",
   "ticket_path": "/v1/tickets",
   "redeem_path": "/v1/tickets/redeem",
   "interaction_path": "/v1/interactions/{id}",
@@ -184,8 +224,8 @@ iframe `postMessage` 仅为提示，不可信。权威状态来自下一节。
 }
 ```
 
-成功：`success: true`，`status`（submission）、`approval_status`、`record_id`、`record_version`、`operation_id`、`navigation`、`subject_sub`。  
-`subject_sub` 必须匹配当前 namespaced actor，否则插件丢弃。
+成功：`success: true`，`status`（submission）、`approval_status`、`record_id`、`record_version`、`operation_id`、`result`（1.1 `{type,status,code,message}`）、`navigation`、`summary`、`subject_sub`。  
+`subject_sub` 必须匹配当前 namespaced actor，否则插件丢弃。超时/非 200 映射为 `TECHNICAL_ERROR`/`UNKNOWN`，不得静默保留过期成功态。
 
 ## 时序：草稿 → 提交 → 同一卡片
 
@@ -223,7 +263,10 @@ sequenceDiagram
 | `activations.pat` | authenticated | 校验并保存 PAT |
 | `activations.disconnect` | authenticated | 撤销本用户令牌 |
 | `interactions.claim` | authenticated | 绑定 callId↔用户↔线程；需已激活 |
-| `interactions.get` | authenticated | 拉收据并覆盖状态 |
+| `interactions.get` | authenticated | 拉收据并合并 1.1 结果 |
+| `interactions.lookup` | authenticated | 按宿主 callId+线程恢复 |
+| `interactions.query_status` | authenticated | 按 operationId 查询，禁止重提 |
+| `interactions.retry` | authenticated | 仅 FAILED+safe_retry |
 | `interactions.cancel` | authenticated | 仅草稿 |
 | `tickets.issue` | authenticated | 一次性页面票 |
 

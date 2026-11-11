@@ -4,7 +4,7 @@ Base `116b57db97bcbba4e10dae9ad82142656d039d07`。参考 Adapter ≠ 客户生�
 
 | 需求 | 实现 | 执行的测试 | 提议未跑 |
 |------|------|------------|----------|
-| 摘要卡 核对并编辑/取消 | `ui/dist/index.js` `business_ui_card` | 工具 JSON 草稿无所有权 | 全浏览器 E2E（环境未启动完整 Dashboard） |
+| 摘要卡 核对并编辑/取消 | `ui/index.js` `business_ui_card` | 工具 JSON 草稿无所有权 | 全浏览器 E2E（环境未启动完整 Dashboard） |
 | 侧栏 iframe POST 兑票 | FormFrame + Dock `openSidePanel` | Adapter redeem + replay 403 | iframe 第三方 cookie 实机 |
 | 同一 callId 已提交 | `patchResult` + `interactions.get` | 提交后 get 为 submitted | 历史线程 UI 水合点击 |
 | 七字段 / formRef 注册表 | 模型禁止 URL；Adapter FORMS | claim 拒绝 URL form_ref | — |
@@ -20,7 +20,11 @@ Base `116b57db97bcbba4e10dae9ad82142656d039d07`。参考 Adapter ≠ 客户生�
 | 登出即死 | **不实现** | 文档化 UNSUPPORTED | 不可测为成功 |
 | 包安装 | ZIP | `test_manager_installs_zip` + `load_plugin_dir` | 真机 `/data` OCTOP_HOME 上传 |
 | 无宿主 diff | 仅 `plugins/` `tests/unit/plugins/test_business_ui_*` | `git diff --name-only` 门禁 | — |
+| 上游升级复检宿主契约 | `docs/branch-policy.md` | `test_business_ui_host_contract.py` | 真 rebase 后的 git diff 人工审阅 + 浏览器冒烟 |
 | 每用户激活 | Host 凭据 + `activations.*` | OAuth 成功/重放/跨用户；未激活 403；native/PAT；刷新/撤销 | 真 IdP 浏览器弹窗 E2E |
 | 三选一用户授权 | 配置卡 `user_auth_method` | Test Connection 报告 methods；不支持则失败 | Casdoor/其它 IdP live |
 | OAuth2+PKCE 非 Casdoor | `oauth.py` 泛化 endpoints | discovery + S256 + state CSRF | 公网 IdP |
+| 统一收据卡 1.1 | `receipt.py` + `BusinessReceiptCard` | A–F、幂等、旧收据排序、TS parser | Dashboard E2E 侧栏切只读 |
+| lookup 历史恢复 | `interactions.lookup` | scenario F | 真历史线程 UI |
+| UNKNOWN queryStatus | `interactions.query_status` | scenario E | 真超时网络 |
 | 密钥不进 URL/聊天 | PKCE/user token 仅凭据 | list/records 无 token/password/verifier | 日志抓包实机 |

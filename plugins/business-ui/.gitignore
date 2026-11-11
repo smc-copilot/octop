@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 .adapter-certs/
 .pytest_cache/
+ui/node_modules/

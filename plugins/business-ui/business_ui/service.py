@@ -33,6 +33,9 @@ from .models import (
     HandshakeStage,
     InteractionRefInput,
     InteractionStateOutput,
+    LookupInput,
+    OperationResult,
+    QueryStatusInput,
     TicketIssueInput,
     TicketIssueOutput,
 )
@@ -43,6 +46,17 @@ from .outbound import (
     evaluate_handshake,
     handshake_url,
     request_json,
+)
+from .receipt import (
+    RESULT_ERROR,
+    STATUS_FAILED,
+    STATUS_UNKNOWN,
+    VIEW_ACTIONS,
+    apply_result_constraints,
+    coerce_legacy_result,
+    mask_sensitive,
+    merge_receipt,
+    unknown_timeout_patch,
 )
 from .security import (
     UnsafeUrl,
@@ -540,8 +554,12 @@ class BusinessUiService(ActivationMixin):
             "instance_issuer": issuer,
             "namespaced_sub": namespaced_actor(issuer, actor.user_id)["sub"],
             "last_operation_id": None,
+            "operation_id": None,
             "last_error": None,
             "navigation": None,
+            "result": None,
+            "event": None,
+            "receipt_sequence": 0,
         }
         await self._commit(
             [
@@ -564,6 +582,11 @@ class BusinessUiService(ActivationMixin):
         return ClaimOutput(**self._state_from_payload(state).model_dump(), bind_token=bind_token)
 
     def _state_from_payload(self, payload: dict[str, Any]) -> InteractionStateOutput:
+        raw_result = payload.get("result")
+        result = None
+        if isinstance(raw_result, dict) and raw_result.get("type"):
+            result = OperationResult.model_validate(raw_result)
+        operation_id = payload.get("operation_id") or payload.get("last_operation_id")
         return InteractionStateOutput(
             interaction_id=str(payload["interaction_id"]),
             call_id=str(payload["call_id"]),
@@ -576,10 +599,14 @@ class BusinessUiService(ActivationMixin):
             allowed_actions=list(payload.get("allowed_actions") or []),
             submission_status=str(payload.get("submission_status") or "draft"),
             approval_status=str(payload.get("approval_status") or "not_applicable"),
-            summary=dict(payload.get("summary") or {}),
-            last_operation_id=payload.get("last_operation_id"),
+            summary=mask_sensitive(dict(payload.get("summary") or {})),
+            last_operation_id=operation_id,
+            operation_id=operation_id,
             last_error=payload.get("last_error"),
             navigation=payload.get("navigation"),
+            result=result,
+            event=payload.get("event"),
+            receipt_sequence=int(payload.get("receipt_sequence") or 0),
         )
 
     async def _load_owned(
@@ -607,21 +634,10 @@ class BusinessUiService(ActivationMixin):
         issuer = str(data.get("instance_issuer") or await self.instance_issuer())
         refreshed = await self._pull_receipt(actor, conn, data, issuer)
         if refreshed != data:
-            await self._commit(
-                [
-                    RecordWrite(
-                        INTERACTIONS,
-                        record.logical_key,
-                        record.owner_user_id,
-                        refreshed,
-                        record.revision,
-                    )
-                ],
-                checks=[
-                    RecordCheck(INTERACTIONS, record.logical_key, record.revision),
-                ],
-            )
-            data = refreshed
+            try:
+                data = await self._persist_interaction(record, refreshed)
+            except PluginActionError:
+                data = refreshed
         return self._state_from_payload(data)
 
     async def cancel(
@@ -649,8 +665,13 @@ class BusinessUiService(ActivationMixin):
         _record, data = await self._load_owned(actor, payload)
         if data.get("submission_status") == "cancelled":
             raise _err("INVALID", "cancelled interaction")
-        if payload.action == "view_detail" and data.get("submission_status") != "submitted":
-            raise _err("INVALID", "detail is only available after submit")
+        view = payload.action in VIEW_ACTIONS or payload.action == "view_detail"
+        if view:
+            if not data.get("record_id"):
+                raise _err("INVALID", "view requires a recordId")
+            allowed = set(data.get("allowed_actions") or [])
+            if allowed and not (allowed & VIEW_ACTIONS) and "view_detail" not in allowed:
+                raise _err("ACCESS_DENIED", "view is not allowed", 403)
         conn = await self._load_enabled(str(data["connection_id"]))
         bundle = await self._secret_bundle(conn)
         token = await self._user_access_token(actor, conn)
@@ -668,11 +689,13 @@ class BusinessUiService(ActivationMixin):
                 body={
                     "protocol": PROTOCOL,
                     "subject": namespaced_actor(issuer, actor.user_id),
-                    "form_ref": self._form_ref_for_action(data, payload.action),
+                    "form_ref": self._form_ref_for_action(
+                        data, "view_detail" if view else payload.action
+                    ),
                     "record_id": data.get("record_id"),
                     "schema_version": data["schema_version"],
                     "record_version": data.get("record_version") or 0,
-                    "action": payload.action,
+                    "action": "view_detail" if view else payload.action,
                     "interaction_id": data["interaction_id"],
                     "nonce": nonce,
                     "connection_id": data["connection_id"],
@@ -697,7 +720,7 @@ class BusinessUiService(ActivationMixin):
             resolve_and_authorize(redeem_url, private_exceptions=exceptions)
         except UnsafeUrl as exc:
             raise _err("UNSAFE_URL", str(exc)) from exc
-        mode = "readonly" if payload.action == "view_detail" else "edit"
+        mode = "readonly" if view else "edit"
         return TicketIssueOutput(
             redeem_url=redeem_url,
             ticket=str(body["ticket"]),
@@ -707,6 +730,214 @@ class BusinessUiService(ActivationMixin):
             page_mode=mode,  # type: ignore[arg-type]
             form_ref=str(body.get("form_ref") or data["form_ref"]),
         )
+
+    def _incoming_from_body(self, data: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        incoming = dict(data)
+        result = coerce_legacy_result(body)
+        if result is not None:
+            incoming["result"] = result
+        if body.get("status"):
+            incoming["submission_status"] = str(body["status"])
+        if body.get("approval_status"):
+            incoming["approval_status"] = str(body["approval_status"])
+        if "record_id" in body:
+            incoming["record_id"] = body.get("record_id")
+        if body.get("record_version") is not None:
+            incoming["record_version"] = int(body["record_version"])
+        operation_id = body.get("operation_id") or body.get("operationId")
+        if operation_id:
+            incoming["operation_id"] = str(operation_id)
+            incoming["last_operation_id"] = str(operation_id)
+        if body.get("navigation"):
+            incoming["navigation"] = body["navigation"]
+        if body.get("summary"):
+            incoming["summary"] = mask_sensitive(body["summary"])
+        if body.get("form_ref") or body.get("formRef"):
+            incoming["form_ref"] = str(body.get("form_ref") or body.get("formRef"))
+        if body.get("schema_version") or body.get("schemaVersion"):
+            incoming["schema_version"] = str(
+                body.get("schema_version") or body.get("schemaVersion")
+            )
+        if body.get("receipt_sequence") is not None or body.get("receiptSequence") is not None:
+            incoming["receipt_sequence"] = int(
+                body.get("receipt_sequence") or body.get("receiptSequence") or 0
+            )
+        elif operation_id:
+            incoming["receipt_sequence"] = int(data.get("receipt_sequence") or 0) + 1
+        if body.get("allowed_actions") or body.get("allowedActions"):
+            incoming["allowed_actions"] = list(
+                body.get("allowed_actions") or body.get("allowedActions") or []
+            )
+        if body.get("detail_error"):
+            incoming["last_error"] = str(body["detail_error"])
+        return apply_result_constraints(incoming)
+
+    async def _persist_interaction(self, record: Any, data: dict[str, Any]) -> dict[str, Any]:
+        await self._commit(
+            [
+                RecordWrite(
+                    INTERACTIONS,
+                    record.logical_key,
+                    record.owner_user_id,
+                    data,
+                    record.revision,
+                )
+            ],
+            checks=[RecordCheck(INTERACTIONS, record.logical_key, record.revision)],
+        )
+        return data
+
+    async def lookup(self, actor: PluginActor, payload: LookupInput) -> InteractionStateOutput:
+        actor = await self._actor(actor, "authenticated")
+        agent_id, thread_id = self._require_scope(actor)
+        bind_key = _bind_key(agent_id, thread_id, payload.call_id)
+        existing = await self._facade.get_record(CALL_BINDS, bind_key)
+        if existing is None:
+            raise _err("NOT_FOUND", "no interaction bound to this call", 404)
+        if int(existing.payload.get("user_id") or 0) != actor.user_id:
+            raise _err("ACCESS_DENIED", "call is bound to another user", 403)
+        if existing.payload.get("thread_id") != thread_id:
+            raise _err("ACCESS_DENIED", "call is bound to another thread", 403)
+        return await self.get_interaction(
+            actor,
+            InteractionRefInput(
+                interaction_id=str(existing.payload["interaction_id"]),
+                call_id=payload.call_id,
+            ),
+        )
+
+    async def query_status(
+        self, actor: PluginActor, payload: QueryStatusInput
+    ) -> InteractionStateOutput:
+        actor = await self._actor(actor, "authenticated")
+        record, data = await self._load_owned(actor, payload)
+        result = data.get("result") if isinstance(data.get("result"), dict) else {}
+        if str(result.get("status") or "") != STATUS_UNKNOWN:
+            return self._state_from_payload(data)
+        conn = await self._load_enabled(str(data["connection_id"]))
+        issuer = str(data.get("instance_issuer") or await self.instance_issuer())
+        refreshed = await self._query_operation(actor, conn, data, issuer, payload.operation_id)
+        if refreshed != data:
+            try:
+                data = await self._persist_interaction(record, refreshed)
+            except PluginActionError:
+                data = refreshed
+        return self._state_from_payload(data)
+
+    async def retry(
+        self, actor: PluginActor, payload: InteractionRefInput
+    ) -> InteractionStateOutput:
+        actor = await self._actor(actor, "authenticated")
+        record, data = await self._load_owned(actor, payload)
+        result = data.get("result") if isinstance(data.get("result"), dict) else {}
+        if (
+            str(result.get("type") or "") != RESULT_ERROR
+            or str(result.get("status") or "") != STATUS_FAILED
+        ):
+            raise _err("INVALID", "retry is only allowed for confirmed FAILED operations")
+        if not result.get("safe_retry"):
+            raise _err("INVALID", "retry is not confirmed safe")
+        conn = await self._load_enabled(str(data["connection_id"]))
+        issuer = str(data.get("instance_issuer") or await self.instance_issuer())
+        refreshed = await self._retry_operation(actor, conn, data, issuer)
+        if refreshed != data:
+            try:
+                data = await self._persist_interaction(record, refreshed)
+            except PluginActionError:
+                data = refreshed
+        return self._state_from_payload(data)
+
+    async def _query_operation(
+        self,
+        actor: PluginActor,
+        conn: dict[str, Any],
+        data: dict[str, Any],
+        issuer: str,
+        operation_id: str,
+    ) -> dict[str, Any]:
+        return await self._adapter_json(
+            actor,
+            conn,
+            data,
+            issuer,
+            urljoin(conn["base_url"] + "/", f"v1/operations/{operation_id}"),
+            {
+                "protocol": PROTOCOL,
+                "subject": namespaced_actor(issuer, actor.user_id),
+                "query_only": True,
+            },
+            resolved_from_unknown=True,
+        )
+
+    async def _retry_operation(
+        self,
+        actor: PluginActor,
+        conn: dict[str, Any],
+        data: dict[str, Any],
+        issuer: str,
+    ) -> dict[str, Any]:
+        operation_id = str(data.get("operation_id") or data.get("last_operation_id") or "")
+        return await self._adapter_json(
+            actor,
+            conn,
+            data,
+            issuer,
+            urljoin(conn["base_url"] + "/", f"v1/operations/{operation_id}/retry"),
+            {"protocol": PROTOCOL, "subject": namespaced_actor(issuer, actor.user_id)},
+        )
+
+    async def _adapter_json(
+        self,
+        actor: PluginActor,
+        conn: dict[str, Any],
+        data: dict[str, Any],
+        issuer: str,
+        url: str,
+        body: dict[str, Any],
+        *,
+        resolved_from_unknown: bool = False,
+    ) -> dict[str, Any]:
+        bundle = await self._secret_bundle(conn)
+        try:
+            token = await self._user_access_token(actor, conn)
+        except PluginActionError:
+            return unknown_timeout_patch(data, operation_id=data.get("operation_id"))
+        exceptions = parse_exception_list(list(conn.get("private_allow") or []))
+        extra = list(conn.get("extra_origins") or [])
+        client = build_client(tls_ca_pem=bundle.get("tls_ca_pem"))
+        try:
+            status, payload, _text = request_json(
+                client,
+                "POST",
+                url,
+                token=token,
+                body=body,
+                base_url=conn["base_url"],
+                extra_origins=extra,
+                private_exceptions=exceptions,
+            )
+        except AdapterError as exc:
+            if exc.code in {"timeout", "tls_or_connect", "upstream"}:
+                return unknown_timeout_patch(
+                    data,
+                    operation_id=str(
+                        data.get("operation_id") or data.get("last_operation_id") or ""
+                    )
+                    or None,
+                )
+            return unknown_timeout_patch(
+                data, operation_id=str(data.get("operation_id") or "") or None
+            )
+        finally:
+            client.close()
+        if status != 200 or not isinstance(payload, dict):
+            return unknown_timeout_patch(
+                data, operation_id=str(data.get("operation_id") or "") or None
+            )
+        incoming = self._incoming_from_body(data, payload)
+        if resolved_from_unknown:
+            incoming["resolved_from_unknown"] = True
+        return merge_receipt(data, incoming)
 
     async def _pull_receipt(
         self,
@@ -719,7 +950,7 @@ class BusinessUiService(ActivationMixin):
         try:
             token = await self._user_access_token(actor, conn)
         except PluginActionError:
-            return data
+            return unknown_timeout_patch(data, operation_id=data.get("operation_id"))
         exceptions = parse_exception_list(list(conn.get("private_allow") or []))
         extra = list(conn.get("extra_origins") or [])
         client = build_client(tls_ca_pem=bundle.get("tls_ca_pem"))
@@ -739,33 +970,35 @@ class BusinessUiService(ActivationMixin):
                 extra_origins=extra,
                 private_exceptions=exceptions,
             )
-        except AdapterError:
-            return data
+        except AdapterError as exc:
+            if exc.code in {"timeout", "tls_or_connect", "upstream"}:
+                return unknown_timeout_patch(
+                    data,
+                    operation_id=str(
+                        data.get("operation_id") or data.get("last_operation_id") or ""
+                    )
+                    or None,
+                )
+            return unknown_timeout_patch(
+                data, operation_id=str(data.get("operation_id") or "") or None
+            )
         finally:
             client.close()
-        if status != 200 or not isinstance(body, dict) or not body.get("success"):
-            return data
-        if body.get("interaction_id") != data["interaction_id"]:
+        if (
+            status != 200
+            or not isinstance(body, dict)
+            or not (body.get("success") or body.get("result") or body.get("operation_id"))
+        ):
+            return unknown_timeout_patch(
+                data, operation_id=str(data.get("operation_id") or "") or None
+            )
+        interaction_id = body.get("interaction_id") or body.get("interactionId")
+        if interaction_id and interaction_id != data["interaction_id"]:
             return data
         if (
             body.get("subject_sub")
             and body["subject_sub"] != namespaced_actor(issuer, actor.user_id)["sub"]
         ):
             return data
-        next_state = dict(data)
-        if body.get("status"):
-            next_state["submission_status"] = str(body["status"])
-        if body.get("approval_status"):
-            next_state["approval_status"] = str(body["approval_status"])
-        if "record_id" in body:
-            next_state["record_id"] = body.get("record_id")
-        if body.get("record_version") is not None:
-            next_state["record_version"] = int(body["record_version"])
-        if body.get("operation_id"):
-            next_state["last_operation_id"] = str(body["operation_id"])
-        if body.get("navigation"):
-            next_state["navigation"] = body["navigation"]
-        if next_state.get("submission_status") == "submitted":
-            next_state["allowed_actions"] = ["view_detail"]
-            next_state["last_error"] = body.get("detail_error")
-        return next_state
+        incoming = self._incoming_from_body(data, body)
+        return merge_receipt(data, incoming)

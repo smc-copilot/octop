@@ -22,7 +22,7 @@ def _reset_registry() -> None:
 
 def _plugin_zip() -> bytes:
     buf = io.BytesIO()
-    skip = {".adapter-certs", "__pycache__", ".pytest_cache"}
+    skip = {".adapter-certs", "__pycache__", ".pytest_cache", "node_modules"}
     with zipfile.ZipFile(buf, "w") as zf:
         for path in _PLUGIN_ROOT.rglob("*"):
             if not path.is_file():
@@ -37,7 +37,7 @@ def test_harness_loads_plugin_tools() -> None:
     loaded = load_plugin_dir(_PLUGIN_ROOT, install_deps=False)
     assert loaded.manifest.id == "business-ui"
     names = {tool.name for tool in loaded.tools}
-    assert names == {"business_ui_draft", "business_ui_connections"}
+    assert names == {"business_ui_draft", "business_ui_connections", "business_ui_receipt"}
 
 
 @pytest.mark.asyncio
