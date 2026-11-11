@@ -305,3 +305,122 @@ def secret_material_hash(spec: EnvConnectionSpec) -> str:
     if spec.tls_ca_file:
         parts.append(file_sha256(spec.tls_ca_file))
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class EnvKeySpec:
+    """Canonical BUSINESS_UI_* docs; keep plugin.yaml / env.template / env-deploy in sync."""
+
+    name: str
+    requiredness: str
+    purpose_zh: str
+    default: str | None = None
+    values: tuple[str, ...] = ()
+
+
+ENV_KEY_SPECS: tuple[EnvKeySpec, ...] = (
+    EnvKeySpec(
+        "BUSINESS_UI_BASE_URL",
+        "required_if_active",
+        "HTTPS Adapter 基址；未设则不做环境引导",
+    ),
+    EnvKeySpec(
+        "BUSINESS_UI_INSTANCE_ISSUER",
+        "required_if_active",
+        "本 Octop 实例 https 源，每台唯一，禁止跨实例复用",
+    ),
+    EnvKeySpec(
+        "BUSINESS_UI_OPERATOR_USER_ID",
+        "required_if_active",
+        "持有服务凭据的本地 admin 数字 user_id，不是用户名",
+    ),
+    EnvKeySpec(
+        "BUSINESS_UI_SERVICE_SECRET_FILE",
+        "required_if_active",
+        "服务 Bearer 绝对路径；缺文件则失败关闭，不会跳过鉴权",
+    ),
+    EnvKeySpec(
+        "BUSINESS_UI_CONNECTION_ID",
+        "optional_default",
+        "稳定连接 id，跨重启不变",
+        default="default",
+    ),
+    EnvKeySpec(
+        "BUSINESS_UI_DISPLAY_NAME",
+        "optional_default",
+        "列表显示名",
+        default="等于 CONNECTION_ID",
+    ),
+    EnvKeySpec(
+        "BUSINESS_UI_AUTH_METHOD",
+        "optional_default",
+        "Octop 到 Adapter 的服务身份",
+        default="api_token",
+        values=("api_token", "authorization_code"),
+    ),
+    EnvKeySpec(
+        "BUSINESS_UI_USER_AUTH_METHOD",
+        "optional_default",
+        "每位用户激活方式",
+        default="oauth2",
+        values=("oauth2", "native_login", "personal_access_token"),
+    ),
+    EnvKeySpec(
+        "BUSINESS_UI_ENABLED",
+        "optional_default",
+        "是否启用该连接",
+        default="1",
+        values=("1", "0", "true", "false", "on", "off"),
+    ),
+    EnvKeySpec(
+        "BUSINESS_UI_OAUTH_SCOPES",
+        "optional_default",
+        "OAuth scope 空格分隔",
+        default="openid profile",
+    ),
+    EnvKeySpec(
+        "BUSINESS_UI_OAUTH_CLIENT_ID",
+        "conditional_oauth2",
+        "OAuth/OIDC client id",
+    ),
+    EnvKeySpec(
+        "BUSINESS_UI_OAUTH_DISCOVERY_URL",
+        "conditional_oauth2",
+        "RFC 8414 / OIDC discovery；可替代 authorize+token",
+    ),
+    EnvKeySpec(
+        "BUSINESS_UI_OAUTH_AUTHORIZE_URL",
+        "conditional_oauth2",
+        "无 discovery 时与 TOKEN_URL 成对必填",
+    ),
+    EnvKeySpec(
+        "BUSINESS_UI_OAUTH_TOKEN_URL",
+        "conditional_oauth2",
+        "无 discovery 时与 AUTHORIZE_URL 成对必填",
+    ),
+    EnvKeySpec(
+        "BUSINESS_UI_OAUTH_REVOKE_URL",
+        "optional",
+        "可选 token 吊销端点",
+    ),
+    EnvKeySpec(
+        "BUSINESS_UI_OAUTH_CLIENT_SECRET_FILE",
+        "optional",
+        "oauth2 机密客户端 secret 绝对路径，chmod 0600",
+    ),
+    EnvKeySpec(
+        "BUSINESS_UI_PRIVATE_ALLOW",
+        "optional",
+        "内网或回环 Adapter 的显式 CIDR/host；禁止 169.254.0.0/16",
+    ),
+    EnvKeySpec(
+        "BUSINESS_UI_EXTRA_ORIGINS",
+        "optional",
+        "额外批准的 HTTPS origin（空格或逗号分隔）",
+    ),
+    EnvKeySpec(
+        "BUSINESS_UI_TLS_CA_FILE",
+        "optional",
+        "自签 Adapter CA PEM 绝对路径，允许 0644",
+    ),
+)

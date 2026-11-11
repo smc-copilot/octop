@@ -34,11 +34,45 @@ Octop 数据根目录：
 
 ## 全局环境变量（推荐多实例，不经过聊天）
 
-约 10 台 Octop 用 Dashboard **高级设置 → 环境变量**（或进程环境）落下 Adapter URL 与用户授权方式，不必在每台机器的聊天里填配置卡。**不要**把这份表单做进 Plugin Management（宿主没有插件设置槽）。密钥禁止写进 `BUSINESS_UI_*` 值（会进 agent shell / MCP）；只用绝对路径 `*_FILE`（0600）。每位用户仍要单独激活。
+约 10 台 Octop 用 Dashboard **高级设置 → 环境变量**（或进程环境）落下 Adapter URL 与用户授权方式，不必在聊天里填配置卡。密钥禁止写进 `BUSINESS_UI_*` 值（会进 agent shell / MCP）；只用绝对路径 `*_FILE`（0600）。每位用户仍要单独激活。
 
-完整键、何时重启、密钥落盘、`python -m business_ui test`：见 [docs/env-deploy.md](docs/env-deploy.md) 与 [docs/env.template](docs/env.template)。
+Plugin Management 详情抽屉只显示 `plugin.yaml` 的 **description**（列表卡片两行截断；抽屉是普通段落，无 Markdown）。中文键名/必填/生效方式写在该字段；完整表如下，可复制模板见 [docs/env-deploy.md](docs/env-deploy.md) 与 [docs/env.template](docs/env.template)。
 
-## 配置卡（插件自有，不改 Octop 设置页 / Plugin Management）
+| 变量 | 必填性 | 用途 |
+|------|--------|------|
+| `BUSINESS_UI_BASE_URL` | 已设后必填；未设则跳过引导 | HTTPS Adapter 基址 |
+| `BUSINESS_UI_INSTANCE_ISSUER` | 已设后必填 | 本实例 https 源 |
+| `BUSINESS_UI_OPERATOR_USER_ID` | 已设后必填 | 本地 admin 数字 user_id |
+| `BUSINESS_UI_SERVICE_SECRET_FILE` | 已设后必填 | 服务密钥绝对路径 |
+| `BUSINESS_UI_CONNECTION_ID` | 可选，默认 `default` | 稳定连接 id |
+| `BUSINESS_UI_DISPLAY_NAME` | 可选，默认等于 CONNECTION_ID | 显示名 |
+| `BUSINESS_UI_AUTH_METHOD` | 可选，默认 `api_token` | `api_token` / `authorization_code` |
+| `BUSINESS_UI_USER_AUTH_METHOD` | 可选，默认 `oauth2` | `oauth2` / `native_login` / `personal_access_token` |
+| `BUSINESS_UI_ENABLED` | 可选，默认 `1` | `0`/`false`/`off` 停用 |
+| `BUSINESS_UI_OAUTH_SCOPES` | 可选，默认 `openid profile` | OAuth scopes |
+| `BUSINESS_UI_OAUTH_CLIENT_ID` | oauth2 条件必填 | client id |
+| `BUSINESS_UI_OAUTH_DISCOVERY_URL` | oauth2：discovery 或 authorize+token | discovery URL |
+| `BUSINESS_UI_OAUTH_AUTHORIZE_URL` | oauth2 无 discovery 时与 token 成对 | 授权 URL |
+| `BUSINESS_UI_OAUTH_TOKEN_URL` | oauth2 无 discovery 时与 authorize 成对 | token URL |
+| `BUSINESS_UI_OAUTH_REVOKE_URL` | 可选 | 吊销 URL |
+| `BUSINESS_UI_OAUTH_CLIENT_SECRET_FILE` | 可选 | 机密客户端 secret 文件 |
+| `BUSINESS_UI_PRIVATE_ALLOW` | 可选 | 内网/回环 CIDR |
+| `BUSINESS_UI_EXTRA_ORIGINS` | 可选 | 额外 origin |
+| `BUSINESS_UI_TLS_CA_FILE` | 可选 | 自签 CA |
+
+最小 native_login 模板：
+
+```
+BUSINESS_UI_BASE_URL=https://adapter.example.com
+BUSINESS_UI_INSTANCE_ISSUER=https://octop.example.com
+BUSINESS_UI_OPERATOR_USER_ID=1
+BUSINESS_UI_SERVICE_SECRET_FILE=/etc/octop/business-ui/service.token
+BUSINESS_UI_USER_AUTH_METHOD=native_login
+```
+
+Dashboard 保存环境变量立刻生效、不必重启；只改 `~/.octop/env` 磁盘或进程 `-e` 须重启。环境页无 Test：`python -m business_ui test`。
+
+## 配置卡（插件自有；Plugin Management 无表单）
 
 管理员也可在聊天中调用 `business_ui_connections`（或让模型打开配置卡）。`managed_by=env` 的连接只读，聊天不能改 URL/授权方式或删除：
 

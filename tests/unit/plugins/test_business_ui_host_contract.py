@@ -47,6 +47,8 @@ def test_plugin_yaml_matches_harness_and_octop_ui_keys() -> None:
     assert raw["ui"]["entry"] == "ui/index.js"
     assert raw["ui"]["manifest"] == "ui/manifest.json"
     assert (PLUGIN / raw["ui"]["entry"]).is_file()
+    assert "description" in raw
+    assert loaded.description == str(raw["description"]).strip()
 
 
 def test_ui_host_exposes_six_methods_and_side_panel_shape() -> None:
@@ -137,3 +139,20 @@ def test_global_env_replace_is_immediate_and_mcp_copies_non_octop() -> None:
     envs = _read("src/octop/api/routers/envs.py")
     assert "apply_env_file_replace" in envs
     assert "search_env_changed" in envs
+
+
+def test_plugin_management_has_single_plain_description_field() -> None:
+    panel = _read("dashboard/src/pages/Admin/Plugins/InstalledPluginsPanel.tsx")
+    assert "{detail.description" in panel
+    assert "drawerDesc" in panel
+    assert "cardDesc" in panel
+    assert "ReactMarkdown" not in panel
+    assert "dangerouslySetInnerHTML" not in panel
+    css = _read("dashboard/src/pages/Admin/Plugins/index.module.less")
+    assert "-webkit-line-clamp: 2" in css
+    drawer_block = css.split(".drawerDesc")[1].split("}")[0]
+    assert "pre-wrap" not in drawer_block
+    assert "white-space" not in drawer_block
+    manager = _read("src/octop/infra/agents/plugins/manager.py")
+    assert '"description": manifest.description' in manager
+    assert "long_description" not in manager

@@ -30,3 +30,4 @@ Base `116b57db97bcbba4e10dae9ad82142656d039d07`。参考 Adapter ≠ 客户生�
 | 密钥不进 URL/聊天 | PKCE/user token 仅凭据 | list/records 无 token/password/verifier | 日志抓包实机 |
 | 全局 BUSINESS_UI_* 引导 | 现有 `PUT /api/envs` + `os.environ`；插件 sync + `*_FILE` | `test_business_ui_env.py`：bootstrap、优先级/reload、SSRF、内联密钥拒绝、密钥不披露、鉴权隔离、handshake 方法、CLI healthcheck、wake 循环、无变更不升 revision、去掉 BASE_URL 释放为 chat、空指纹视为未激活 | 环境变量页 Test 按钮（宿主无此扩展，不实现）；磁盘直改 `~/.octop/env` 的重启实机 |
 | 多实例模板 | 插件文档 | `docs/env-deploy.md` + `docs/env.template` 仅占位符 | 十台实机滚动 |
+| Plugin Management 看见 BUSINESS_UI_* | 仅 `plugin.yaml` description（宿主无表单） | `test_business_ui_env_docs.py` 键表与 yaml/README/template 同步；host_contract 断言卡片两行截断、抽屉纯文本 | 真机 Dashboard 抽屉换行观感 |

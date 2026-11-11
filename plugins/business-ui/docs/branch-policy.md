@@ -36,7 +36,8 @@
 | `src/octop/api/routers/envs.py` | `PUT /api/envs` 写 `~/.octop/env` 并 `apply_env_file_replace`；仅 `SEARCH_ENV_KEYS` 触发 agent reload。`BUSINESS_UI_*` **不必重启**即可被插件下次 sync 读到。磁盘直改 `~/.octop/env` 仍要重启。 |
 | `src/octop/infra/agents/plugins/host_contracts.py` | `PluginActor`（`user_id`、`is_admin`、`agent_id`、`thread_id`）；`RecordWrite` / `RecordCheck`（`expected_revision`）；`CredentialActivation` / `CredentialDeletion`；`PluginActionError`。 |
 | `src/octop/infra/db/repos/plugin_records.py` | `PluginRecordRepo.cas`：`expected_revision==0` INSERT，否则按 revision UPDATE。权威交互状态在此，不在聊天行。 |
-| `src/octop/infra/agents/plugins/manager.py` | `PluginManifest.load`；`parse_plugin_ui_meta` 读 `plugin.yaml` 的 `ui.entry` / `ui.manifest`（缺省曾是 `ui/dist/index.js`）。 |
+| `src/octop/infra/agents/plugins/manager.py` | `PluginManifest.load`；`parse_plugin_ui_meta` 读 `plugin.yaml` 的 `ui.entry` / `ui.manifest`（缺省曾是 `ui/dist/index.js`）。`list_installed` 把 `manifest.description` 原样交给 Dashboard，无独立长描述字段。 |
+| `dashboard/src/pages/Admin/Plugins/InstalledPluginsPanel.tsx` | 已安装卡片 `.cardDesc` **两行** `-webkit-line-clamp: 2`；详情抽屉 `<p class=drawerDesc>`，无 Markdown、无 `white-space: pre-wrap`。本插件把中文 `BUSINESS_UI_*` 引导写进 `plugin.yaml` `description`，不改此 CSS。 |
 | `octop_harness.plugins.PluginManifest` | `plugin.yaml` 必填 `id`+`version`；`kind=tool`；`entry=main.py`；`requires` 为 pip 列表。Octop 额外键：`ui`、`icon`、`group`。 |
 
 ## 上游升级后的验证步骤
@@ -77,7 +78,9 @@
      src/octop/infra/db/repos/plugin_records.py \
      src/octop/infra/agents/plugins/manager.py \
      src/octop/infra/utils/env_file.py \
-     src/octop/api/routers/envs.py
+     src/octop/api/routers/envs.py \
+     dashboard/src/pages/Admin/Plugins/InstalledPluginsPanel.tsx \
+     dashboard/src/pages/Admin/Plugins/index.module.less
    ```
 
 4. **浏览器冒烟**（Dashboard 已加载本插件 UI）：草稿卡 → 认领 → 侧栏兑票 → 提交后**同一 `callId`** 变为 `BusinessReceiptCard`；成功且侧栏仍为 edit 时切只读详情；历史打开走 `interactions.lookup`（允许短暂草稿闪烁）；dark/light；UNKNOWN 只出现「查询状态」不自动重提。

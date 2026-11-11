@@ -1,6 +1,8 @@
 # 多实例 BUSINESS_UI_* 部署（无聊天配置）
 
-目标：约 10 台 Octop 各自用**全局环境变量**落下 Adapter URL 与用户授权方式，管理员不必在聊天里填配置卡。每位用户仍走现有激活（OAuth / 业务账号 / PAT）。**不要把配置 UI 做进 Plugin Management**（宿主无该扩展点）。
+目标：约 10 台 Octop 各自用**全局环境变量**落下 Adapter URL 与用户授权方式，管理员不必在聊天里填配置卡。每位用户仍走现有激活（OAuth / 业务账号 / PAT）。
+
+Plugin Management **没有**配置表单（宿主只渲染 `plugin.yaml` 的 `description`：已安装卡片两行截断，详情抽屉普通段落、无 Markdown、换行会收成空格）。中文键名与必填说明写在该 description 里；完整表与可复制模板以本文为准。
 
 ## 宿主环境何时生效（已核对源码）
 
@@ -15,23 +17,59 @@
 
 环境页**没有** Test Connection 按钮（不改 Dashboard）。健康检查用插件 CLI。
 
-## 键（一份连接，身份稳定）
+## 键（与 `env_config.ENV_KEY_SPECS` / `plugin.yaml` description 同步）
 
-见 `docs/env.template`。必填：
+未设 `BUSINESS_UI_BASE_URL`：不做环境引导。一旦设置，下列「已设后必填」缺一则失败关闭。取值与默认来自 `parse_env_spec`。
 
-- `BUSINESS_UI_BASE_URL` — HTTPS Adapter，无 URL 用户信息/fragment
-- `BUSINESS_UI_CONNECTION_ID` — 稳定逻辑 id，跨重启不变；**每台 Octop 自己的 id+issuer，禁止跨实例复用令牌**
-- `BUSINESS_UI_INSTANCE_ISSUER` — 本实例 `https://` 源，写入 `plugin_records` settings
-- `BUSINESS_UI_OPERATOR_USER_ID` — 持有服务凭据的本地 **admin** `user_id`（整数，不是用户名）
-- `BUSINESS_UI_USER_AUTH_METHOD` — `oauth2` / `native_login` / `personal_access_token`
-- `BUSINESS_UI_AUTH_METHOD` — `api_token`（推荐）或 `authorization_code`
-- `BUSINESS_UI_SERVICE_SECRET_FILE` — **绝对路径**，服务 Bearer；缺此文件则**失败关闭**，不会关掉服务鉴权
+| 变量 | 必填性 | 用途 | 默认 / 取值 |
+|------|--------|------|-------------|
+| `BUSINESS_UI_BASE_URL` | 已设后必填（未设则跳过引导） | HTTPS Adapter 基址；无 URL 用户信息/fragment | 无 |
+| `BUSINESS_UI_INSTANCE_ISSUER` | 已设后必填 | 本 Octop 实例 https 源，每台唯一 | 无 |
+| `BUSINESS_UI_OPERATOR_USER_ID` | 已设后必填 | 持有服务凭据的本地 admin 数字 user_id，不是用户名 | 无 |
+| `BUSINESS_UI_SERVICE_SECRET_FILE` | 已设后必填 | 服务 Bearer 绝对路径；缺文件失败关闭，不跳过鉴权 | 无 |
+| `BUSINESS_UI_CONNECTION_ID` | 可选（有默认） | 稳定连接 id，跨重启不变 | `default` |
+| `BUSINESS_UI_DISPLAY_NAME` | 可选（有默认） | 列表显示名 | 等于 CONNECTION_ID |
+| `BUSINESS_UI_AUTH_METHOD` | 可选（有默认） | Octop→Adapter 服务身份 | `api_token`；`api_token` / `authorization_code` |
+| `BUSINESS_UI_USER_AUTH_METHOD` | 可选（有默认） | 每位用户激活方式 | `oauth2`；`oauth2` / `native_login` / `personal_access_token` |
+| `BUSINESS_UI_ENABLED` | 可选（有默认） | 是否启用 | `1`；`0`/`false`/`off` 停用 |
+| `BUSINESS_UI_OAUTH_SCOPES` | 可选（有默认） | OAuth scope | `openid profile` |
+| `BUSINESS_UI_OAUTH_CLIENT_ID` | oauth2 条件必填 | OAuth/OIDC client id | 无 |
+| `BUSINESS_UI_OAUTH_DISCOVERY_URL` | oauth2 条件（与成对 URL 二选一） | RFC 8414 / OIDC discovery | 无 |
+| `BUSINESS_UI_OAUTH_AUTHORIZE_URL` | oauth2 条件（无 discovery 时与 token 成对） | 授权端点 | 无 |
+| `BUSINESS_UI_OAUTH_TOKEN_URL` | oauth2 条件（无 discovery 时与 authorize 成对） | 换票端点 | 无 |
+| `BUSINESS_UI_OAUTH_REVOKE_URL` | 可选 | token 吊销 | 无 |
+| `BUSINESS_UI_OAUTH_CLIENT_SECRET_FILE` | 可选 | oauth2 机密客户端 secret 绝对路径，0600 | 无 |
+| `BUSINESS_UI_PRIVATE_ALLOW` | 可选 | 内网/回环显式 CIDR 或 host；禁止 169.254.0.0/16 | 无 |
+| `BUSINESS_UI_EXTRA_ORIGINS` | 可选 | 额外 HTTPS origin | 无 |
+| `BUSINESS_UI_TLS_CA_FILE` | 可选 | 自签 CA PEM，允许 0644 | 无 |
 
-oauth2 另需 `BUSINESS_UI_OAUTH_CLIENT_ID` + discovery **或** authorize+token。client secret 只用 `BUSINESS_UI_OAUTH_CLIENT_SECRET_FILE`。
+若设置了 `BUSINESS_UI_SERVICE_SECRET` 等内联密钥键：**失败关闭**。密钥只用 `*_FILE`。
 
-内网 Adapter：`BUSINESS_UI_PRIVATE_ALLOW`（显式 CIDR/host）。metadata / 链路本地永远拒绝。
+## 可复制最小模板
 
-若设置了 `BUSINESS_UI_SERVICE_SECRET` 等内联密钥键：**失败关闭**。
+native_login（无 OAuth）：
+
+```
+BUSINESS_UI_BASE_URL=https://adapter.example.com
+BUSINESS_UI_INSTANCE_ISSUER=https://octop.example.com
+BUSINESS_UI_OPERATOR_USER_ID=1
+BUSINESS_UI_SERVICE_SECRET_FILE=/etc/octop/business-ui/service.token
+BUSINESS_UI_USER_AUTH_METHOD=native_login
+```
+
+oauth2（discovery）：
+
+```
+BUSINESS_UI_BASE_URL=https://adapter.example.com
+BUSINESS_UI_INSTANCE_ISSUER=https://octop.example.com
+BUSINESS_UI_OPERATOR_USER_ID=1
+BUSINESS_UI_SERVICE_SECRET_FILE=/etc/octop/business-ui/service.token
+BUSINESS_UI_USER_AUTH_METHOD=oauth2
+BUSINESS_UI_OAUTH_CLIENT_ID=replace-me
+BUSINESS_UI_OAUTH_DISCOVERY_URL=https://idp.example.com/.well-known/openid-configuration
+```
+
+回环 Adapter 再加 `BUSINESS_UI_PRIVATE_ALLOW=127.0.0.1/32`。带占位符的完整稿：`docs/env.template`。
 
 ## 密钥文件
 
