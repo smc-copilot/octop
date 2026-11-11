@@ -730,15 +730,11 @@ function ConfigCard(props) {
   const [test, setTest] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const reload = async () => {
-    const res = await runAction(
-      host2,
-      "connections.list",
-      {},
-      false
-    );
+    const res = await runAction(host2, "connections.list", {}, false);
     setRows(res.connections || []);
     setCanManage(!!res.can_manage);
     setIssuer(res.instance_issuer || "");
+    if (res.env_sync_error) setError(String(res.env_sync_error));
   };
   useEffect(() => {
     reload().catch((err) => setError(String(err?.message || err)));
@@ -774,47 +770,52 @@ function ConfigCard(props) {
   };
   return /* @__PURE__ */ jsxs("div", { style: cardStyle(dark), "data-business-ui-config": "1", children: [
     /* @__PURE__ */ jsx("div", { style: { fontWeight: 700 }, children: "Business UI \u8FDE\u63A5" }),
-    /* @__PURE__ */ jsx("div", { style: { fontSize: 12, opacity: 0.8, marginTop: 4 }, children: "\u8FDE\u63A5\u5BC6\u94A5\u4E0E\u7528\u6237\u4EE4\u724C\u53EA\u7ECF\u5DF2\u8BA4\u8BC1 action \u5199\u5165 Host \u51ED\u636E\u3002\u6BCF\u4F4D\u7528\u6237\u5355\u72EC\u6FC0\u6D3B\u3002" }),
+    /* @__PURE__ */ jsx("div", { style: { fontSize: 12, opacity: 0.8, marginTop: 4 }, children: "\u8FDE\u63A5\u5BC6\u94A5\u4E0E\u7528\u6237\u4EE4\u724C\u53EA\u7ECF\u5DF2\u8BA4\u8BC1 action \u5199\u5165 Host \u51ED\u636E\u3002\u6BCF\u4F4D\u7528\u6237\u5355\u72EC\u6FC0\u6D3B\u3002\u591A\u5B9E\u4F8B\u90E8\u7F72\u7528\u5168\u5C40 BUSINESS_UI_*\uFF08\u5BC6\u94A5\u53EA\u7528 *_FILE\uFF09\uFF0C\u4E0D\u5FC5\u5728\u804A\u5929\u91CC\u586B\uFF1B\u73AF\u5883\u53D8\u91CF\u9875\u6CA1\u6709 Test \u6309\u94AE\uFF0C\u8BF7\u7528 python -m business_ui test\u3002" }),
     issuer ? /* @__PURE__ */ jsxs("div", { style: { fontSize: 12, marginTop: 6 }, children: [
       "\u5B9E\u4F8B issuer\uFF1A",
       issuer
     ] }) : null,
     error ? /* @__PURE__ */ jsx("div", { style: { color: tone("err"), fontSize: 12 }, children: error }) : null,
-    rows.map((row) => /* @__PURE__ */ jsxs("div", { style: { marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--ant-color-border, #e2e8f0)", fontSize: 13 }, children: [
-      /* @__PURE__ */ jsx("strong", { children: String(row.display_name) }),
-      /* @__PURE__ */ jsxs("div", { children: [
-        String(row.base_url),
-        " \xB7 \u670D\u52A1\u8EAB\u4EFD ",
-        String(row.auth_method),
-        " \xB7 \u7528\u6237\u6388\u6743 ",
-        methodLabel(String(row.user_auth_method)),
-        row.enabled ? " \xB7 \u542F\u7528" : " \xB7 \u505C\u7528"
-      ] }),
-      /* @__PURE__ */ jsx(ActivationPanel, { host: host2, connection: row, onChanged: reload }),
-      canManage ? /* @__PURE__ */ jsxs("div", { children: [
-        /* @__PURE__ */ jsx(
-          "button",
-          {
-            type: "button",
-            style: btn(false),
-            onClick: async () => setTest(await runAction(host2, "connections.test", { connection_id: row.connection_id }, false)),
-            children: "Test Connection"
-          }
-        ),
-        /* @__PURE__ */ jsx(
-          "button",
-          {
-            type: "button",
-            style: btn(false),
-            onClick: async () => {
-              await runAction(host2, "connections.delete", { connection_id: row.connection_id }, false);
-              await reload();
-            },
-            children: "\u5220\u9664"
-          }
-        )
-      ] }) : null
-    ] }, String(row.connection_id))),
+    rows.map((row) => {
+      const envManaged = row.managed_by === "env";
+      return /* @__PURE__ */ jsxs("div", { style: { marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--ant-color-border, #e2e8f0)", fontSize: 13 }, children: [
+        /* @__PURE__ */ jsx("strong", { children: String(row.display_name) }),
+        /* @__PURE__ */ jsxs("div", { children: [
+          String(row.base_url),
+          " \xB7 \u670D\u52A1\u8EAB\u4EFD ",
+          String(row.auth_method),
+          " \xB7 \u7528\u6237\u6388\u6743 ",
+          methodLabel(String(row.user_auth_method)),
+          row.enabled ? " \xB7 \u542F\u7528" : " \xB7 \u505C\u7528",
+          envManaged ? " \xB7 \u73AF\u5883\u53D8\u91CF\u7BA1\u7406" : ""
+        ] }),
+        envManaged ? /* @__PURE__ */ jsx("div", { style: { fontSize: 12, marginTop: 4, opacity: 0.8 }, children: "\u7531\u5168\u5C40 BUSINESS_UI_* \u7BA1\u7406\uFF0C\u804A\u5929\u91CC\u4E0D\u80FD\u6539 URL/\u6388\u6743\u65B9\u5F0F\u3002\u6BCF\u4F4D\u7528\u6237\u4ECD\u9700\u5355\u72EC\u6FC0\u6D3B\u3002" }) : null,
+        /* @__PURE__ */ jsx(ActivationPanel, { host: host2, connection: row, onChanged: reload }),
+        canManage ? /* @__PURE__ */ jsxs("div", { children: [
+          /* @__PURE__ */ jsx(
+            "button",
+            {
+              type: "button",
+              style: btn(false),
+              onClick: async () => setTest(await runAction(host2, "connections.test", { connection_id: row.connection_id }, false)),
+              children: "Test Connection"
+            }
+          ),
+          envManaged ? null : /* @__PURE__ */ jsx(
+            "button",
+            {
+              type: "button",
+              style: btn(false),
+              onClick: async () => {
+                await runAction(host2, "connections.delete", { connection_id: row.connection_id }, false);
+                await reload();
+              },
+              children: "\u5220\u9664"
+            }
+          )
+        ] }) : null
+      ] }, String(row.connection_id));
+    }),
     canManage ? /* @__PURE__ */ jsxs("div", { style: { marginTop: 12 }, children: [
       /* @__PURE__ */ jsx("input", { placeholder: "\u663E\u793A\u540D", value: form.display_name, onChange: (e) => setForm({ ...form, display_name: e.target.value }), style: { display: "block", width: "100%", marginTop: 6 } }),
       /* @__PURE__ */ jsx("input", { placeholder: "HTTPS Adapter \u5730\u5740", value: form.base_url, onChange: (e) => setForm({ ...form, base_url: e.target.value }), style: { display: "block", width: "100%", marginTop: 6 } }),

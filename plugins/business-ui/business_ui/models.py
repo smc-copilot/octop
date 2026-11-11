@@ -56,6 +56,8 @@ class ConnectionListOutput(_Strict):
     instance_issuer: str
     connections: list[dict[str, Any]]
     can_manage: bool
+    env_sync_error: str | None = None
+    env_managed_ids: list[str] = Field(default_factory=list)
 
 
 class ConnectionSaveOutput(_Strict):

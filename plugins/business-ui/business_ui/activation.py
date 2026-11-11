@@ -102,9 +102,23 @@ class ActivationMixin:
             ACTIVATIONS, activation_key(actor.user_id, connection_id)
         )
 
-    async def activation_public(self, actor: PluginActor, connection_id: str) -> dict[str, Any]:
+    async def activation_public(
+        self,
+        actor: PluginActor,
+        connection_id: str,
+        *,
+        config_fingerprint: str | None = None,
+    ) -> dict[str, Any]:
         record = await self._activation_row(actor, connection_id)
-        if record is None or record.payload.get("status") in {None, "revoked", "pending"}:
+        if record is None or record.payload.get("status") in {
+            None,
+            "revoked",
+            "pending",
+            "stale_config",
+        }:
+            return {"activation_status": "inactive"}
+        stored_fp = str(record.payload.get("config_fingerprint") or "")
+        if config_fingerprint and stored_fp and stored_fp != config_fingerprint:
             return {"activation_status": "inactive"}
         expires = record.payload.get("expires_at")
         status = str(record.payload.get("status") or "inactive")
@@ -165,6 +179,7 @@ class ActivationMixin:
                         "credential_id": new_id,
                         "credential_revision": 2,
                         "expires_at": expires_at,
+                        "config_fingerprint": conn.get("config_fingerprint"),
                     },
                     expected,
                 )
@@ -176,6 +191,10 @@ class ActivationMixin:
     async def _user_access_token(self, actor: PluginActor, conn: dict[str, Any]) -> str:
         record = await self._activation_row(actor, conn["connection_id"])
         if record is None or record.payload.get("status") != "active":
+            raise _err("ACTIVATION_REQUIRED", "需要激活/重新激活", 403)
+        stored_fp = str(record.payload.get("config_fingerprint") or "")
+        current_fp = str(conn.get("config_fingerprint") or "")
+        if current_fp and stored_fp != current_fp:
             raise _err("ACTIVATION_REQUIRED", "需要激活/重新激活", 403)
         if int(record.payload.get("user_id") or 0) != actor.user_id:
             raise _err("ACCESS_DENIED", "activation belongs to another user", 403)

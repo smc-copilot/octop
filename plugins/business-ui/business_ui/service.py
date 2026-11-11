@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import os
 import re
 import secrets
 from typing import Any
@@ -20,7 +22,15 @@ from octop.infra.agents.plugins.host_contracts import (
 )
 
 from . import PROTOCOL
-from .activation import ActivationMixin
+from .activation import ACTIVATIONS, ActivationMixin
+from .env_config import (
+    EnvConfigError,
+    EnvConnectionSpec,
+    load_secret_bundle,
+    parse_env_spec,
+    public_fingerprint,
+    secret_material_hash,
+)
 from .models import (
     ClaimInput,
     ClaimOutput,
@@ -118,6 +128,7 @@ def _public_connection(payload: dict[str, Any], *, include_admin: bool) -> dict[
         "oauth_client_id": payload.get("oauth_client_id"),
         "oauth_scopes": payload.get("oauth_scopes"),
         "oauth_client_secret_configured": bool(payload.get("oauth_client_secret_configured")),
+        "managed_by": payload.get("managed_by") or "chat",
     }
     if include_admin:
         row["revision"] = payload.get("revision", 0)
@@ -128,6 +139,8 @@ def _public_connection(payload: dict[str, Any], *, include_admin: bool) -> dict[
 class BusinessUiService(ActivationMixin):
     def __init__(self, facade: Any) -> None:
         self._facade = facade
+        self._env_lock = asyncio.Lock()
+        self._last_env_error: str | None = None
 
     async def _actor(self, actor: PluginActor, permission: str = "authenticated") -> PluginActor:
         try:
@@ -188,12 +201,182 @@ class BusinessUiService(ActivationMixin):
         except PluginHostError as exc:
             raise _host_err(exc) from exc
 
+    async def sync_env_managed(self) -> str | None:
+        """Apply BUSINESS_UI_* from the current process env into Host records.
+
+        Dashboard PUT /api/envs updates os.environ immediately (no restart).
+        Editing ~/.octop/env on disk without that API requires an Octop restart
+        because apply_env_file runs at server start.
+        """
+        async with self._env_lock:
+            try:
+                spec = parse_env_spec(os.environ)
+            except EnvConfigError as exc:
+                self._last_env_error = f"{exc.code}: {exc.message}"
+                return self._last_env_error
+            if spec is None:
+                self._last_env_error = None
+                return None
+            try:
+                await self._apply_env_spec(spec)
+            except EnvConfigError as exc:
+                self._last_env_error = f"{exc.code}: {exc.message}"
+                return self._last_env_error
+            except PluginActionError as exc:
+                self._last_env_error = f"{exc.code}: {exc.message}"
+                return self._last_env_error
+            self._last_env_error = None
+            return None
+
+    async def _apply_env_spec(self, spec: EnvConnectionSpec) -> None:
+        current_issuer = await self.instance_issuer()
+        if current_issuer and current_issuer.rstrip("/") != spec.instance_issuer:
+            raise EnvConfigError(
+                "INSTANCE_ISSUER_CONFLICT",
+                "BUSINESS_UI_INSTANCE_ISSUER does not match the stored instance issuer",
+            )
+        if not current_issuer:
+            await self._commit(
+                [
+                    RecordWrite(
+                        SETTINGS,
+                        INSTANCE_KEY,
+                        spec.operator_user_id,
+                        {"issuer": spec.instance_issuer, "managed_by": "env"},
+                        0,
+                    )
+                ]
+            )
+        bundle = load_secret_bundle(spec)
+        if not bundle.get("secret"):
+            raise EnvConfigError("SECRET_REQUIRED", "service secret file is empty")
+        fingerprint = public_fingerprint(
+            {
+                "connection_id": spec.connection_id,
+                "base_url": spec.base_url,
+                "auth_method": spec.auth_method,
+                "user_auth_method": spec.user_auth_method,
+                "instance_issuer": spec.instance_issuer,
+                "oauth_client_id": spec.oauth_client_id,
+                "oauth_discovery_url": spec.oauth_discovery_url,
+                "oauth_authorize_url": spec.oauth_authorize_url,
+                "oauth_token_url": spec.oauth_token_url,
+            }
+        )
+        material = secret_material_hash(spec)
+        existing = await self._facade.get_record(CONNECTIONS, spec.connection_id)
+        if existing is not None and existing.payload.get("managed_by") not in {None, "env", "chat"}:
+            raise EnvConfigError("ENV_INVALID", "connection record has an unknown managed_by")
+        owner_id = spec.operator_user_id
+        expected = 0
+        credential_id = None
+        credential_owner = owner_id
+        credential_revision = 0
+        activations: list[CredentialActivation] = []
+        deletions: list[CredentialDeletion] = []
+        restage = True
+        if existing is not None:
+            expected = existing.revision
+            owner_id = int(
+                existing.payload.get("credential_owner_user_id") or existing.owner_user_id
+            )
+            credential_id = existing.payload.get("credential_id")
+            credential_owner = owner_id
+            credential_revision = int(existing.payload.get("credential_revision") or 0)
+            same_owner = (
+                int(existing.payload.get("credential_owner_user_id") or existing.owner_user_id)
+                == spec.operator_user_id
+            )
+            if (
+                existing.payload.get("secret_material_hash") == material
+                and credential_id
+                and same_owner
+            ):
+                restage = False
+        if restage:
+            staged = {
+                "auth_method": spec.auth_method,
+                "secret": bundle["secret"],
+                "single_use": spec.auth_method == "authorization_code",
+                "tls_ca_pem": bundle.get("tls_ca_pem"),
+                "oauth_client_id": spec.oauth_client_id,
+                "oauth_client_secret": bundle.get("oauth_client_secret"),
+            }
+            new_id = await self._facade.stage_credential(spec.operator_user_id, staged)
+            activations.append(CredentialActivation(new_id, spec.operator_user_id, 1))
+            if credential_id and str(credential_id) != new_id:
+                deletions.append(
+                    CredentialDeletion(
+                        str(credential_id), credential_owner, credential_revision or 2
+                    )
+                )
+            credential_id = new_id
+            credential_owner = spec.operator_user_id
+            credential_revision = 2
+            owner_id = spec.operator_user_id
+        record_payload = {
+            "connection_id": spec.connection_id,
+            "display_name": spec.display_name,
+            "base_url": spec.base_url,
+            "auth_method": spec.auth_method,
+            "enabled": spec.enabled,
+            "extra_origins": list(spec.extra_origins),
+            "private_allow": list(spec.private_allow),
+            "credential_id": credential_id,
+            "credential_owner_user_id": credential_owner,
+            "credential_revision": credential_revision,
+            "instance_issuer": spec.instance_issuer,
+            "user_auth_method": spec.user_auth_method,
+            "oauth_discovery_url": spec.oauth_discovery_url,
+            "oauth_authorize_url": spec.oauth_authorize_url,
+            "oauth_token_url": spec.oauth_token_url,
+            "oauth_revoke_url": spec.oauth_revoke_url,
+            "oauth_client_id": spec.oauth_client_id,
+            "oauth_scopes": spec.oauth_scopes,
+            "oauth_client_secret_configured": bool(bundle.get("oauth_client_secret")),
+            "managed_by": "env",
+            "config_fingerprint": fingerprint,
+            "secret_material_hash": material,
+        }
+        await self._commit(
+            [RecordWrite(CONNECTIONS, spec.connection_id, owner_id, record_payload, expected)],
+            activations,
+            deletions=deletions,
+        )
+        prev_fp = None if existing is None else existing.payload.get("config_fingerprint")
+        if prev_fp and prev_fp != fingerprint:
+            await self._invalidate_stale_activations(spec.connection_id, fingerprint)
+
+    async def _invalidate_stale_activations(self, connection_id: str, fingerprint: str) -> None:
+        for record in await self._facade.list_records(ACTIVATIONS):
+            payload = dict(record.payload)
+            if payload.get("connection_id") != connection_id:
+                continue
+            if payload.get("config_fingerprint") == fingerprint:
+                continue
+            if payload.get("status") not in {"active", "expired"}:
+                continue
+            payload["status"] = "stale_config"
+            await self._commit(
+                [
+                    RecordWrite(
+                        ACTIVATIONS,
+                        record.logical_key,
+                        record.owner_user_id,
+                        payload,
+                        record.revision,
+                    )
+                ]
+            )
+
     async def list_connections(self, actor: PluginActor) -> ConnectionListOutput:
         actor = await self._actor(actor, "authenticated")
+        env_error = await self.sync_env_managed()
         issuer = await self.instance_issuer()
         records = await self._facade.list_records(CONNECTIONS)
         can_manage = bool(actor.is_admin)
         items = []
+        env_ids: list[str] = []
         for record in records:
             payload = dict(record.payload)
             payload["revision"] = record.revision
@@ -202,16 +385,29 @@ class BusinessUiService(ActivationMixin):
             if not can_manage and not payload.get("enabled"):
                 continue
             public = _public_connection(payload, include_admin=can_manage)
-            public.update(await self.activation_public(actor, str(payload["connection_id"])))
+            public.update(
+                await self.activation_public(
+                    actor,
+                    str(payload["connection_id"]),
+                    config_fingerprint=str(payload.get("config_fingerprint") or "") or None,
+                )
+            )
             items.append(public)
+            if payload.get("managed_by") == "env":
+                env_ids.append(str(payload["connection_id"]))
         return ConnectionListOutput(
-            instance_issuer=issuer, connections=items, can_manage=can_manage
+            instance_issuer=issuer,
+            connections=items,
+            can_manage=can_manage,
+            env_sync_error=env_error if can_manage else None,
+            env_managed_ids=env_ids,
         )
 
     async def save_connection(
         self, actor: PluginActor, payload: ConnectionSaveInput
     ) -> ConnectionSaveOutput:
         actor = await self._actor(actor, "admin")
+        await self.sync_env_managed()
         issuer = await self._ensure_issuer(actor, payload.instance_issuer)
         try:
             validate_https_url_syntax(payload.base_url)
@@ -242,6 +438,13 @@ class BusinessUiService(ActivationMixin):
                 )
         connection_id = payload.connection_id or f"conn-{uuid4()}"
         existing = await self._facade.get_record(CONNECTIONS, connection_id)
+        if existing is not None and existing.payload.get("managed_by") == "env":
+            raise _err("ENV_MANAGED", "env-managed connection cannot be edited from chat")
+        for row in await self._facade.list_records(CONNECTIONS):
+            if row.payload.get("deleted") or row.payload.get("managed_by") != "env":
+                continue
+            if str(row.payload.get("base_url") or "").rstrip("/") == payload.base_url.rstrip("/"):
+                raise _err("ENV_MANAGED", "an env-managed connection already uses this Adapter URL")
         expected = existing.revision if existing is not None else 0
         if existing is not None and existing.owner_user_id != actor.user_id and not actor.is_admin:
             raise _err("ACCESS_DENIED", "cannot edit another operator's connection", 403)
@@ -313,12 +516,30 @@ class BusinessUiService(ActivationMixin):
             "oauth_client_secret_configured": bool(
                 payload.oauth_client_secret or existing_bundle.get("oauth_client_secret")
             ),
+            "managed_by": "chat",
+            "config_fingerprint": public_fingerprint(
+                {
+                    "connection_id": connection_id,
+                    "base_url": payload.base_url,
+                    "auth_method": payload.auth_method,
+                    "user_auth_method": payload.user_auth_method,
+                    "instance_issuer": issuer,
+                    "oauth_client_id": payload.oauth_client_id,
+                    "oauth_discovery_url": payload.oauth_discovery_url,
+                    "oauth_authorize_url": payload.oauth_authorize_url,
+                    "oauth_token_url": payload.oauth_token_url,
+                }
+            ),
         }
+        prev_fp = None if existing is None else existing.payload.get("config_fingerprint")
         rows = await self._commit(
             [RecordWrite(CONNECTIONS, connection_id, owner_id, record_payload, expected)],
             activations,
             deletions=deletions,
         )
+        new_fp = record_payload["config_fingerprint"]
+        if prev_fp and prev_fp != new_fp:
+            await self._invalidate_stale_activations(connection_id, str(new_fp))
         return ConnectionSaveOutput(
             connection_id=connection_id,
             revision=rows[0].revision,
@@ -332,6 +553,8 @@ class BusinessUiService(ActivationMixin):
         existing = await self._facade.get_record(CONNECTIONS, payload.connection_id)
         if existing is None:
             raise _err("NOT_FOUND", "connection not found", 404)
+        if existing.payload.get("managed_by") == "env":
+            raise _err("ENV_MANAGED", "env-managed connection cannot be deleted from chat")
         deletions: list[CredentialDeletion] = []
         cred_id = existing.payload.get("credential_id")
         if cred_id:
@@ -389,6 +612,7 @@ class BusinessUiService(ActivationMixin):
         self, actor: PluginActor, payload: ConnectionIdInput
     ) -> ConnectionTestOutput:
         actor = await self._actor(actor, "admin")
+        await self.sync_env_managed()
         stages: list[HandshakeStage] = []
         try:
             conn = await self._load_enabled(payload.connection_id)
@@ -508,6 +732,7 @@ class BusinessUiService(ActivationMixin):
 
     async def claim(self, actor: PluginActor, payload: ClaimInput) -> ClaimOutput:
         actor = await self._actor(actor, "authenticated")
+        await self.sync_env_managed()
         agent_id, thread_id = self._require_scope(actor)
         if "/" in payload.form_ref or payload.form_ref.lower().startswith("http"):
             raise _err("INVALID_FORM_REF", "formRef must be a registry name, not a URL")

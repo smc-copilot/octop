@@ -32,9 +32,15 @@ Octop 数据根目录：
 
 前端 UI 为预构建 ESM：`ui/index.js` + `ui/manifest.json`（路径避开仓库根 `dist/` gitignore），无需改 Dashboard。
 
-## 配置卡（插件自有，不改 Octop 设置页）
+## 全局环境变量（推荐多实例，不经过聊天）
 
-管理员在聊天中调用 `business_ui_connections`（或让模型打开配置卡）：
+约 10 台 Octop 用 Dashboard **高级设置 → 环境变量**（或进程环境）落下 Adapter URL 与用户授权方式，不必在每台机器的聊天里填配置卡。**不要**把这份表单做进 Plugin Management（宿主没有插件设置槽）。密钥禁止写进 `BUSINESS_UI_*` 值（会进 agent shell / MCP）；只用绝对路径 `*_FILE`（0600）。每位用户仍要单独激活。
+
+完整键、何时重启、密钥落盘、`python -m business_ui test`：见 [docs/env-deploy.md](docs/env-deploy.md) 与 [docs/env.template](docs/env.template)。
+
+## 配置卡（插件自有，不改 Octop 设置页 / Plugin Management）
+
+管理员也可在聊天中调用 `business_ui_connections`（或让模型打开配置卡）。`managed_by=env` 的连接只读，聊天不能改 URL/授权方式或删除：
 
 | 字段 | 说明 |
 |------|------|

@@ -27,6 +27,7 @@ FACADE_DEFS = (
     "list_records",
     "stage_credential",
     "commit",
+    "register_background_worker",
 )
 
 
@@ -122,3 +123,17 @@ def test_jwt_plugin_action_routes_and_records_cas() -> None:
     assert "def cas(" in records
     manager = _read("src/octop/infra/agents/plugins/manager.py")
     assert "def parse_plugin_ui_meta" in manager
+
+
+def test_global_env_replace_is_immediate_and_mcp_copies_non_octop() -> None:
+    env_file = _read("src/octop/infra/utils/env_file.py")
+    assert "def apply_env_file(" in env_file
+    assert "does not unset missing keys" in env_file
+    assert "def apply_env_file_replace(" in env_file
+    assert "SEARCH_ENV_KEYS" in env_file
+    assert "TAVILY_API_KEY" in env_file
+    assert "BUSINESS_UI_" not in env_file
+    assert 'key.startswith("OCTOP_")' in env_file
+    envs = _read("src/octop/api/routers/envs.py")
+    assert "apply_env_file_replace" in envs
+    assert "search_env_changed" in envs

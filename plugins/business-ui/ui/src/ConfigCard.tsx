@@ -35,15 +35,16 @@ export function ConfigCard(props: PluginToolProps) {
   const [form, setForm] = useState(emptyForm);
 
   const reload = async () => {
-    const res = await runAction<{ connections?: Record<string, unknown>[]; can_manage?: boolean; instance_issuer?: string }>(
-      host,
-      "connections.list",
-      {},
-      false,
-    );
+    const res = await runAction<{
+      connections?: Record<string, unknown>[];
+      can_manage?: boolean;
+      instance_issuer?: string;
+      env_sync_error?: string | null;
+    }>(host, "connections.list", {}, false);
     setRows(res.connections || []);
     setCanManage(!!res.can_manage);
     setIssuer(res.instance_issuer || "");
+    if (res.env_sync_error) setError(String(res.env_sync_error));
   };
 
   useEffect(() => {
@@ -84,17 +85,27 @@ export function ConfigCard(props: PluginToolProps) {
     <div style={cardStyle(dark)} data-business-ui-config="1">
       <div style={{ fontWeight: 700 }}>Business UI 连接</div>
       <div style={{ fontSize: 12, opacity: 0.8, marginTop: 4 }}>
-        连接密钥与用户令牌只经已认证 action 写入 Host 凭据。每位用户单独激活。
+        连接密钥与用户令牌只经已认证 action 写入 Host 凭据。每位用户单独激活。多实例部署用全局
+        BUSINESS_UI_*（密钥只用 *_FILE），不必在聊天里填；环境变量页没有 Test 按钮，请用
+        python -m business_ui test。
       </div>
       {issuer ? <div style={{ fontSize: 12, marginTop: 6 }}>实例 issuer：{issuer}</div> : null}
       {error ? <div style={{ color: tone("err"), fontSize: 12 }}>{error}</div> : null}
-      {rows.map((row) => (
+      {rows.map((row) => {
+        const envManaged = row.managed_by === "env";
+        return (
         <div key={String(row.connection_id)} style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--ant-color-border, #e2e8f0)", fontSize: 13 }}>
           <strong>{String(row.display_name)}</strong>
           <div>
             {String(row.base_url)} · 服务身份 {String(row.auth_method)} · 用户授权 {methodLabel(String(row.user_auth_method))}
             {row.enabled ? " · 启用" : " · 停用"}
+            {envManaged ? " · 环境变量管理" : ""}
           </div>
+          {envManaged ? (
+            <div style={{ fontSize: 12, marginTop: 4, opacity: 0.8 }}>
+              由全局 BUSINESS_UI_* 管理，聊天里不能改 URL/授权方式。每位用户仍需单独激活。
+            </div>
+          ) : null}
           <ActivationPanel host={host} connection={row} onChanged={reload} />
           {canManage ? (
             <div>
@@ -105,6 +116,7 @@ export function ConfigCard(props: PluginToolProps) {
               >
                 Test Connection
               </button>
+              {envManaged ? null : (
               <button
                 type="button"
                 style={btn(false)}
@@ -115,10 +127,12 @@ export function ConfigCard(props: PluginToolProps) {
               >
                 删除
               </button>
+              )}
             </div>
           ) : null}
         </div>
-      ))}
+        );
+      })}
       {canManage ? (
         <div style={{ marginTop: 12 }}>
           <input placeholder="显示名" value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} style={{ display: "block", width: "100%", marginTop: 6 }} />

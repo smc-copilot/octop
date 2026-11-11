@@ -22,7 +22,7 @@ def _reset_registry() -> None:
 
 def _plugin_zip() -> bytes:
     buf = io.BytesIO()
-    skip = {".adapter-certs", "__pycache__", ".pytest_cache", "node_modules"}
+    skip = {".adapter-certs", "__pycache__", ".pytest_cache", "node_modules", ".vite", "dist"}
     with zipfile.ZipFile(buf, "w") as zf:
         for path in _PLUGIN_ROOT.rglob("*"):
             if not path.is_file():
@@ -70,3 +70,7 @@ def test_manager_installs_zip(tmp_path: Path) -> None:
     assert (dest / "ui" / "index.js").is_file()
     listing = mgr.list_installed()
     assert any(item.get("id") == "business-ui" for item in listing)
+    names = zipfile.ZipFile(archive).namelist()
+    assert not any(
+        "node_modules" in name or ".vite" in name or "__pycache__" in name for name in names
+    )

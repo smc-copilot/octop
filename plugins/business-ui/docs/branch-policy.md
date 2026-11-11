@@ -31,7 +31,9 @@
 | `src/octop/api/routers/chat/history.py` | Dashboard 历史 REST 无按 `callId` PATCH 工具 `output` 的接口。 |
 | `src/octop/api/routers/plugin_actions.py` | JWT：`GET /api/plugins/{id}/actions`，`POST /api/plugins/{id}/actions/{name}`，信封 `{ api_version: 1, context?, payload }`。身份来自 `current_user`，不是模型参数。 |
 | `src/octop/api/routers/plugins.py` | `prefix=/plugins` 挂到 `/api`。`GET /{plugin_id}/ui/{file_path}` 提供 ESM；`POST /upload` 安装 ZIP。 |
-| `src/octop/infra/agents/plugins/host.py` | `register_host_setup`；`PluginHostFacade.register_action`（`permission` ∈ `authenticated\|admin\|agent_owner`）；`register_read_only_tools`；`reauthorize_actor`；`current_execution`；`get_record` / `list_records`；`stage_credential` + `commit` CAS。 |
+| `src/octop/infra/agents/plugins/host.py` | `register_host_setup`；`PluginHostFacade.register_action`（`permission` ∈ `authenticated\|admin\|agent_owner`）；`register_read_only_tools`；`register_background_worker`；`reauthorize_actor`；`current_execution`；`get_record` / `list_records`；`stage_credential` + `commit` CAS。 |
+| `src/octop/infra/utils/env_file.py` | `apply_env_file`（启动合并，不删缺键）；`apply_env_file_replace`（Dashboard PUT 立刻改 `os.environ`）；`overlay_stdio_spec_env` 把非 `OCTOP_*` 键拷进 MCP stdio。`BUSINESS_UI_*` 会泄漏到 shell/MCP，故密钥只用 `*_FILE`。 |
+| `src/octop/api/routers/envs.py` | `PUT /api/envs` 写 `~/.octop/env` 并 `apply_env_file_replace`；仅 `SEARCH_ENV_KEYS` 触发 agent reload。`BUSINESS_UI_*` **不必重启**即可被插件下次 sync 读到。磁盘直改 `~/.octop/env` 仍要重启。 |
 | `src/octop/infra/agents/plugins/host_contracts.py` | `PluginActor`（`user_id`、`is_admin`、`agent_id`、`thread_id`）；`RecordWrite` / `RecordCheck`（`expected_revision`）；`CredentialActivation` / `CredentialDeletion`；`PluginActionError`。 |
 | `src/octop/infra/db/repos/plugin_records.py` | `PluginRecordRepo.cas`：`expected_revision==0` INSERT，否则按 revision UPDATE。权威交互状态在此，不在聊天行。 |
 | `src/octop/infra/agents/plugins/manager.py` | `PluginManifest.load`；`parse_plugin_ui_meta` 读 `plugin.yaml` 的 `ui.entry` / `ui.manifest`（缺省曾是 `ui/dist/index.js`）。 |
@@ -73,7 +75,9 @@
      src/octop/infra/agents/plugins/host.py \
      src/octop/infra/agents/plugins/host_contracts.py \
      src/octop/infra/db/repos/plugin_records.py \
-     src/octop/infra/agents/plugins/manager.py
+     src/octop/infra/agents/plugins/manager.py \
+     src/octop/infra/utils/env_file.py \
+     src/octop/api/routers/envs.py
    ```
 
 4. **浏览器冒烟**（Dashboard 已加载本插件 UI）：草稿卡 → 认领 → 侧栏兑票 → 提交后**同一 `callId`** 变为 `BusinessReceiptCard`；成功且侧栏仍为 edit 时切只读详情；历史打开走 `interactions.lookup`（允许短暂草稿闪烁）；dark/light；UNKNOWN 只出现「查询状态」不自动重提。
