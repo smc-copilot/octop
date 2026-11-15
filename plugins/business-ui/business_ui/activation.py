@@ -116,7 +116,13 @@ class ActivationMixin:
             "pending",
             "stale_config",
         }:
-            return {"activation_status": "inactive"}
+            out: dict[str, Any] = {"activation_status": "inactive"}
+            if (
+                record is not None
+                and record.payload.get("remote_revoke_status") == "failed"
+            ):
+                out["remote_revoke_status"] = "failed"
+            return out
         stored_fp = str(record.payload.get("config_fingerprint") or "")
         if config_fingerprint and stored_fp != config_fingerprint:
             return {"activation_status": "inactive"}
@@ -532,72 +538,155 @@ class ActivationMixin:
             expires_at=None if stored is None else stored.payload.get("expires_at"),
         )
 
+    async def _remote_revoke_tokens(
+        self,
+        conn: dict[str, Any],
+        service: dict[str, Any],
+        tokens: dict[str, Any],
+    ) -> str:
+        """Revoke held OAuth tokens at the authorization server.
+
+        Returns ``succeeded``, ``failed``, or ``skipped`` (no revoke URL / no
+        oauth2 tokens). Does not treat local disconnect as grant revocation.
+        """
+        urls = await self._oauth_urls(conn, service)
+        revoke_url = urls.get("revoke_url")
+        if not revoke_url:
+            return "skipped"
+        client_id = str(
+            conn.get("oauth_client_id") or service.get("oauth_client_id") or ""
+        )
+        secret = str(service.get("oauth_client_secret") or "")
+        if not client_id or not secret:
+            return "failed"
+        held: list[str] = []
+        access = str(tokens.get("access_token") or "")
+        refresh = str(tokens.get("refresh_token") or "")
+        if access:
+            held.append(access)
+        if refresh:
+            held.append(refresh)
+        if not held:
+            return "skipped"
+        exceptions = parse_exception_list(list(conn.get("private_allow") or []))
+        extra = list(conn.get("extra_origins") or [])
+        auth_method = str(
+            conn.get("oauth_client_auth_method")
+            or service.get("oauth_client_auth_method")
+            or "client_secret_post"
+        )
+        authorization: str | None = None
+        base_fields: dict[str, str] = {}
+        if auth_method == "client_secret_basic":
+            import base64
+            from urllib.parse import quote
+
+            raw = (
+                f"{quote(client_id, safe='')}:"
+                f"{quote(secret, safe='')}"
+            ).encode("utf-8")
+            authorization = "Basic " + base64.b64encode(raw).decode("ascii")
+        else:
+            base_fields = {
+                "client_id": client_id,
+                "client_secret": secret,
+            }
+        client = build_client(tls_ca_pem=service.get("tls_ca_pem"))
+        try:
+            for token in held:
+                status, body, text = request_form(
+                    client,
+                    revoke_url,
+                    token="",
+                    fields={"token": token, **base_fields},
+                    base_url=conn["base_url"],
+                    extra_origins=extra,
+                    private_exceptions=exceptions,
+                    authorization=authorization,
+                )
+                if status != 200:
+                    return "failed"
+                # Empty body is valid (RFC 7009); a non-empty body must parse.
+                if text and body is None:
+                    return "failed"
+        except (AdapterError, UnsafeUrl, PluginActionError, PluginHostError):
+            return "failed"
+        finally:
+            client.close()
+        return "succeeded"
+
     async def disconnect_activation(
         self, actor: PluginActor, payload: ConnectionIdInput
     ) -> ActivationDisconnectOutput:
         actor = await self._actor(actor, "authenticated")
         record = await self._activation_row(actor, payload.connection_id)
         if record is None:
-            return ActivationDisconnectOutput(disconnected=True)
-        deletions: list[CredentialDeletion] = []
-        cred_id = record.payload.get("credential_id")
-        if cred_id:
-            deletions.append(
-                CredentialDeletion(
-                    str(cred_id), actor.user_id, int(record.payload.get("credential_revision") or 2)
-                )
+            return ActivationDisconnectOutput(
+                disconnected=True, remote_revoke_status="skipped"
             )
+
+        cred_id = record.payload.get("credential_id")
+        bundle: dict[str, Any] = {}
+        if cred_id:
             try:
-                bundle = await self._facade.resolve_credential(str(cred_id), actor.user_id)
+                bundle = await self._facade.resolve_credential(
+                    str(cred_id), actor.user_id
+                )
             except PluginHostError:
                 bundle = {}
-            conn_row = await self._facade.get_record("connections", payload.connection_id)
-            if (
-                conn_row is not None
-                and bundle.get("access_token")
-                and str(conn_row.payload.get("user_auth_method") or "") == "oauth2"
-            ):
-                conn = {**conn_row.payload, "owner_user_id": conn_row.owner_user_id}
-                try:
-                    service = await self._secret_bundle(conn)
-                    urls = await self._oauth_urls(conn, service)
-                    if urls.get("revoke_url"):
-                        client = build_client(tls_ca_pem=service.get("tls_ca_pem"))
-                        try:
-                            request_form(
-                                client,
-                                urls["revoke_url"],
-                                token="",
-                                fields={
-                                    "token": str(bundle.get("access_token") or ""),
-                                    "client_id": str(conn.get("oauth_client_id") or ""),
-                                },
-                                base_url=conn["base_url"],
-                                extra_origins=list(conn.get("extra_origins") or []),
-                                private_exceptions=parse_exception_list(
-                                    list(conn.get("private_allow") or [])
-                                ),
-                            )
-                        except (AdapterError, UnsafeUrl):
-                            pass
-                        finally:
-                            client.close()
-                except (AdapterError, PluginActionError, PluginHostError, UnsafeUrl):
-                    pass
+
+        remote_status = "skipped"
+        conn_row = await self._facade.get_record("connections", payload.connection_id)
+        if (
+            conn_row is not None
+            and str(conn_row.payload.get("user_auth_method") or "") == "oauth2"
+            and (bundle.get("access_token") or bundle.get("refresh_token"))
+        ):
+            conn = {**conn_row.payload, "owner_user_id": conn_row.owner_user_id}
+            try:
+                service = await self._secret_bundle(conn)
+                remote_status = await self._remote_revoke_tokens(conn, service, bundle)
+            except (AdapterError, PluginActionError, PluginHostError, UnsafeUrl):
+                remote_status = "failed"
+
+        deletions: list[CredentialDeletion] = []
+        # Keep protected credentials when remote revoke failed so a later
+        # disconnect can retry without writing tokens into ordinary records.
+        if cred_id and remote_status != "failed":
+            deletions.append(
+                CredentialDeletion(
+                    str(cred_id),
+                    actor.user_id,
+                    int(record.payload.get("credential_revision") or 2),
+                )
+            )
+
+        next_payload = {
+            **{k: v for k, v in record.payload.items() if k != "credential_id"},
+            "status": "revoked",
+            "remote_revoke_status": remote_status,
+        }
+        if remote_status == "failed":
+            next_payload["credential_id"] = cred_id
+            next_payload["credential_revision"] = record.payload.get(
+                "credential_revision"
+            )
+        else:
+            next_payload["credential_id"] = None
+
         await self._commit(
             [
                 RecordWrite(
                     ACTIVATIONS,
                     record.logical_key,
                     actor.user_id,
-                    {
-                        **{k: v for k, v in record.payload.items() if k != "credential_id"},
-                        "status": "revoked",
-                        "credential_id": None,
-                    },
+                    next_payload,
                     record.revision,
                 )
             ],
             deletions=deletions,
         )
-        return ActivationDisconnectOutput(disconnected=True)
+        return ActivationDisconnectOutput(
+            disconnected=True, remote_revoke_status=remote_status
+        )
+

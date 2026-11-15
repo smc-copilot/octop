@@ -180,9 +180,11 @@ async def test_oauth_refresh_and_disconnect_revokes(
         assert claimed["interaction_id"]
         assert set(state.user_tokens) - old_tokens
         monkeypatch.undo()
-        await facade.invoke_action(
+        disconnected = await facade.invoke_action(
             "activations.disconnect", actor, {"connection_id": saved["connection_id"]}
         )
+        assert disconnected["disconnected"] is True
+        assert disconnected["remote_revoke_status"] == "succeeded"
         listed = await facade.invoke_action("connections.list", actor, {})
         assert listed["connections"][0]["activation_status"] == "inactive"
         with pytest.raises(PluginActionError) as after:
@@ -197,6 +199,60 @@ async def test_oauth_refresh_and_disconnect_revokes(
             )
         assert after.value.code == "ACTIVATION_REQUIRED"
         assert state.revoked
+    finally:
+        httpd.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_records_remote_revoke_failure(
+    services: Any, tmp_path: Path
+) -> None:
+    httpd, state, pem, port = _serve(tmp_path)
+    facade = _bind(services)
+    admin_id, user_id = _users(services)
+    try:
+        saved = await facade.invoke_action(
+            "connections.save",
+            PluginActor(admin_id, True),
+            _save_fields(port, pem),
+        )
+        agent_id, thread_id = _scope(services, user_id, "badsec")
+        actor = PluginActor(user_id, False, agent_id=agent_id, thread_id=thread_id)
+        await _activate_oauth(facade, actor, saved["connection_id"], pem)
+        # Authorization server now rejects the previously stored secret.
+        state.oauth_client_secret = "rotated-away"
+        result = await facade.invoke_action(
+            "activations.disconnect", actor, {"connection_id": saved["connection_id"]}
+        )
+        assert result["disconnected"] is True
+        assert result["remote_revoke_status"] == "failed"
+        assert not state.revoked
+        activation = await facade.get_record(
+            "activations", f"u{user_id}-{saved['connection_id']}"
+        )
+        assert activation is not None
+        assert activation.payload.get("status") == "revoked"
+        assert activation.payload.get("remote_revoke_status") == "failed"
+        assert activation.payload.get("credential_id")
+        blob = str(result) + str(activation.payload)
+        assert "bui-secret" not in blob
+        assert "rotated-away" not in blob
+        listed = await facade.invoke_action("connections.list", actor, {})
+        assert listed["connections"][0]["activation_status"] == "inactive"
+        assert listed["connections"][0]["remote_revoke_status"] == "failed"
+        # Restore the secret and retry disconnect — credentials were kept for retry.
+        state.oauth_client_secret = "bui-secret"
+        retry = await facade.invoke_action(
+            "activations.disconnect", actor, {"connection_id": saved["connection_id"]}
+        )
+        assert retry["remote_revoke_status"] == "succeeded"
+        assert state.revoked
+        activation2 = await facade.get_record(
+            "activations", f"u{user_id}-{saved['connection_id']}"
+        )
+        assert activation2 is not None
+        assert activation2.payload.get("credential_id") in (None, "")
+        assert activation2.payload.get("remote_revoke_status") == "succeeded"
     finally:
         httpd.shutdown()
 

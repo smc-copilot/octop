@@ -639,8 +639,30 @@ document.getElementById('f').addEventListener('submit', async (ev) => {{
 
         def _oauth_revoke(self) -> None:
             fields = self._read_form()
+            client_id = fields.get("client_id")
+            client_secret = fields.get("client_secret")
+            auth = self.headers.get("Authorization") or self.headers.get("authorization") or ""
+            if auth.startswith("Basic "):
+                import base64
+                from urllib.parse import unquote
+
+                try:
+                    decoded = base64.b64decode(auth[6:].encode("ascii")).decode("utf-8")
+                    sep = decoded.index(":")
+                    client_id = unquote(decoded[:sep])
+                    client_secret = unquote(decoded[sep + 1 :])
+                except Exception:
+                    _json(self, 401, {"error": "invalid_client"})
+                    return
+            if client_id != state.oauth_client_id:
+                _json(self, 401, {"error": "invalid_client"})
+                return
+            if client_secret != state.oauth_client_secret:
+                _json(self, 401, {"error": "invalid_client"})
+                return
             token = fields.get("token") or ""
-            state.revoked.add(token)
+            if token:
+                state.revoked.add(token)
             _json(self, 200, {"ok": True})
 
         def _native(self) -> None:

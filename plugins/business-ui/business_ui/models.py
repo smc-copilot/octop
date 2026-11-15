@@ -197,3 +197,4 @@ class ActivationStatusOutput(_Strict):
 
 class ActivationDisconnectOutput(_Strict):
     disconnected: bool
+    remote_revoke_status: Literal["succeeded", "failed", "skipped"] = "skipped"

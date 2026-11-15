@@ -81,10 +81,45 @@ export function ActivationPanel(props: {
             style={btn(false, busy)}
             disabled={busy}
             onClick={() => finish(async () => {
-              await runAction(host, "activations.disconnect", { connection_id: connectionId }, false);
+              const result = await runAction(
+                host,
+                "activations.disconnect",
+                { connection_id: connectionId },
+                false,
+              ) as { remote_revoke_status?: string };
+              if (result?.remote_revoke_status === "failed") {
+                throw new Error("本地已断开，但远端撤销失败，请稍后重试断开");
+              }
             })}
           >
             断开
+          </button>
+        </div>
+      ) : connection.remote_revoke_status === "failed" ? (
+        <div>
+          <div style={{ color: tone("err"), marginTop: 4 }}>
+            本地已断开，远端撤销未完成。可重试撤销，或重新激活。
+          </div>
+          <button
+            type="button"
+            style={btn(false, busy)}
+            disabled={busy}
+            onClick={() => finish(async () => {
+              const result = await runAction(
+                host,
+                "activations.disconnect",
+                { connection_id: connectionId },
+                false,
+              ) as { remote_revoke_status?: string };
+              if (result?.remote_revoke_status === "failed") {
+                throw new Error("远端撤销仍失败，请稍后重试");
+              }
+            })}
+          >
+            重试远端撤销
+          </button>
+          <button type="button" style={btn(true, busy)} disabled={busy} onClick={startOauth}>
+            重新激活（OAuth2）
           </button>
         </div>
       ) : method === "oauth2" ? (

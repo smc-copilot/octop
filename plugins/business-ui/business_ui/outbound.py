@@ -29,9 +29,16 @@ class AdapterError(Exception):
         self.status = status
 
 
-def _headers(token: str, content_type: str) -> dict[str, str]:
+def _headers(
+    token: str,
+    content_type: str,
+    *,
+    authorization: str | None = None,
+) -> dict[str, str]:
     headers = {"accept": "application/json", "content-type": content_type}
-    if token:
+    if authorization:
+        headers["authorization"] = authorization
+    elif token:
         headers["authorization"] = f"Bearer {token}"
     return headers
 
@@ -75,6 +82,7 @@ def _send(
     base_url: str,
     extra_origins: list[str],
     private_exceptions: tuple[Any, ...],
+    authorization: str | None = None,
 ) -> tuple[int, dict[str, Any] | None, str]:
     authorize_url(
         url,
@@ -86,7 +94,7 @@ def _send(
         response = client.request(
             method,
             url,
-            headers=_headers(token, content_type),
+            headers=_headers(token, content_type, authorization=authorization),
             content=content,
         )
     except httpx.TimeoutException as exc:
@@ -143,6 +151,7 @@ def request_form(
     base_url: str,
     extra_origins: list[str],
     private_exceptions: tuple[Any, ...],
+    authorization: str | None = None,
 ) -> tuple[int, dict[str, Any] | None, str]:
     from urllib.parse import urlencode
 
@@ -156,6 +165,7 @@ def request_form(
         base_url=base_url,
         extra_origins=extra_origins,
         private_exceptions=private_exceptions,
+        authorization=authorization,
     )
 
 
