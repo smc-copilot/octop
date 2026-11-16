@@ -68,41 +68,13 @@ export interface ConnectorInstance {
   owner_username?: string | null;
   owner_display_name?: string | null;
   can_manage: boolean;
+  /** Custom MCP servers using OAuth: whether the user has to authorize (again). */
+  auth_status?: ConnectorAuthStatus;
   created_at: number;
   updated_at: number;
 }
 
-export interface ComposioConnection {
-  instance_id: string;
-  kind: string;
-  display_name: string;
-  account_email?: string | null;
-  source: string;
-  mcp_server_name: string;
-  status: string;
-  auth_status: string;
-  health: string;
-  usage: string;
-  credential_gen: number;
-  last_checked_at?: number | null;
-  capabilities?: Record<string, boolean>;
-  default_open: boolean;
-  shared: boolean;
-  owner_user_id: number;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface ComposioAppSummary {
-  toolkit: string;
-  name: string;
-  description: string;
-  source: string;
-}
-
-export type ComposioAppAuthorizationResult =
-  | { redirect_url: string }
-  | { status: "unknown" };
+export type ConnectorAuthStatus = "ok" | "required" | "expired";
 
 export interface ConnectorCredentialsPreview {
   [key: string]: unknown;
@@ -204,6 +176,17 @@ export interface CustomMcpServerSpec {
 export type OAuthStartTarget =
   | { type: "catalog"; kind: string }
   | { type: "custom_mcp"; server_name: string };
+
+/** Result of an authorization started from the dashboard. */
+export interface OAuthPendingResult {
+  /** ``ok`` unless the user cancelled or the provider / token exchange failed. */
+  status?: "ok" | "cancelled" | "error";
+  message?: string | null;
+  kind: string;
+  tokens: Record<string, unknown>;
+  server_name?: string;
+  applied?: boolean;
+}
 
 export type CustomMcpServers = Record<string, CustomMcpServerSpec>;
 
@@ -337,14 +320,7 @@ export const connectorsApi = {
     ),
 
   oauthPending: (stateId: string) =>
-    request<{
-      kind: string;
-      /** Only non-Composio OAuth flows return browser-readable token data. */
-      tokens?: Record<string, unknown>;
-      server_name?: string;
-      applied?: boolean;
-      connection?: ComposioConnection | null;
-    }>(`/connectors/oauth/pending/${stateId}`),
+    request<OAuthPendingResult>(`/connectors/oauth/pending/${stateId}`),
 
   oauthCancel: (stateId: string) =>
     request<{ cancelled: boolean }>("/connectors/oauth/cancel", {
