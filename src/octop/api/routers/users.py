@@ -445,7 +445,7 @@ async def _install_default_expert_for_create(
                 template_id=template_id,
                 status="failed",
                 error_code=exc.code.value,
-                error_message=exc.message,
+                error_message=exc.localized_message(locale),
             )
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception("default published expert install failed for user %s", user.id)
