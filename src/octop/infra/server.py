@@ -22,15 +22,8 @@ from octop_harness.plugins.registry import PluginRegistry
 from octop.config import OctopConfig, load_config
 from octop.infra.agents.experts.catalog import ExpertCatalog, default_library_root
 from octop.infra.agents.manager import AgentManager
+from octop.infra.agents.plugins.manager import PluginManager
 from octop.infra.agents.providers.store import sync_provider_preset_models
-from octop.infra.agents.plugins.host import PluginHost
-from octop.infra.agents.plugins.manager import (
-    PluginManager,
-    mutate,
-    register_host,
-    unregister_host,
-    wait_for_mutations,
-)
 from octop.infra.agents.subagents.catalog import SubagentCatalog, default_package_root
 from octop.infra.control.mobile.config_probe import ensure_mobile_capabilities_probed
 from octop.infra.cron.manager import CronManager
@@ -321,7 +314,6 @@ class AppRuntime:
             self.trajectory_service.replace_store(TrajectoryStore(services.trajectory_event_repo))
 
 
-# @lat: [[layers#Process boot]]
 class OctopServer:
     def __init__(self, home: Path | None = None) -> None:
         self._home = home or PathLayout.from_env().root
@@ -332,7 +324,6 @@ class OctopServer:
         self.expert_catalog: ExpertCatalog | None = None
         self.subagent_catalog: SubagentCatalog | None = None
         self.plugin_manager: PluginManager | None = None
-        self.plugin_host: PluginHost | None = None
         self.wizard_tokens = WizardTokenStore(ttl_seconds=300)
         self._started = False
         self._started_at: int | None = None
@@ -435,25 +426,17 @@ class OctopServer:
         self.subagent_catalog = SubagentCatalog(default_package_root())
         self.subagent_catalog.refresh()
 
-        plugin_host = PluginHost(lambda: self.services)
-        self.plugin_host = plugin_host
-        plugin_manager = PluginManager(
+        self.plugin_manager = PluginManager(
             plugins_dir=self.paths.plugins_dir,
             config_path=self.paths.config,
-            host=plugin_host,
         )
-        self.plugin_manager = plugin_manager
-        register_host(plugin_host)
-        try:
-            await mutate(plugin_manager.seed_bundled, manager=plugin_manager)
-            await mutate(
-                lambda: plugin_manager.load_installed(install_deps=True), manager=plugin_manager
-            )
-            self._apply_plugin_channels()
+        self.plugin_manager.seed_bundled()
+        self.plugin_manager.load_installed(install_deps=True)
+        self._apply_plugin_channels()
 
-            import time  # noqa: PLC0415
+        import time  # noqa: PLC0415
 
-            self._started_at = int(time.time())
+        self._started_at = int(time.time())
 
         if should_defer_control_plane_db(config, self.paths):
             from octop.infra.history.retire_v2 import has_history_v2  # noqa: PLC0415
@@ -462,31 +445,22 @@ class OctopServer:
                 raise ValueError(
                     "Cannot migrate history v2 without its original control-plane database"
                 )
-            if should_defer_control_plane_db(config, self.paths):
-                self._started = True
-                self._emit_wizard_password(user_count=0)
-                logger.info("control-plane database deferred until setup wizard chooses a backend")
-                return
-
-            db = open_database(config, self.paths)
-            run_migrations(db)
-            self.services = build_shared_services(db=db, paths=self.paths, config=config)
-            from octop.infra.auth.captcha import boot_from_services  # noqa: PLC0415
-
-            boot_from_services(self.services.settings_repo, self.services.secret_repo)
-            self._ensure_jwt_secret()
-            await self._boot_runtime(config)
             self._started = True
-            assert self.user_manager is not None
-            self._emit_wizard_password(user_count=self.user_manager.count())
-        except BaseException:
-            await wait_for_mutations()
-            await plugin_host.close_and_wait()
-            unregister_host(plugin_host)
-            self.plugin_host = None
-            self.plugin_manager = None
-            self._started = False
-            raise
+            self._emit_wizard_password(user_count=0)
+            logger.info("control-plane database deferred until setup wizard chooses a backend")
+            return
+
+        db = open_database(config, self.paths)
+        run_migrations(db)
+        self.services = build_shared_services(db=db, paths=self.paths, config=config)
+        from octop.infra.auth.captcha import boot_from_services  # noqa: PLC0415
+
+        boot_from_services(self.services.settings_repo, self.services.secret_repo)
+        self._ensure_jwt_secret()
+        await self._boot_runtime(config)
+        self._started = True
+        assert self.user_manager is not None
+        self._emit_wizard_password(user_count=self.user_manager.count())
 
     async def bind_control_plane(self) -> None:
         """Open the configured control-plane DB and boot runtime (first-run wizard).
@@ -653,12 +627,7 @@ class OctopServer:
         registry.schedule_idle_reclaim_sweep()
         await gateway.refresh_media_backends()
 
-        if self.plugin_host is None:
-            raise RuntimeError("plugin host not ready for application runtime")
-        user_mgr = UserManager(
-            self.services,
-            user_created_notifier=self.plugin_host.wake_background_workers,
-        )
+        user_mgr = UserManager(self.services)
         await user_mgr.boot()
         await proactive_scheduler.start_all()
 
@@ -710,7 +679,6 @@ class OctopServer:
             trajectory_service=trajectory_service,
             bridge_manager=bridge_mgr,
         )
-        await self.plugin_host.start_background_workers()
         from octop.infra.knowledge.gate import (  # noqa: PLC0415
             warn_if_local_embedding_deps_missing,
         )
@@ -823,10 +791,6 @@ class OctopServer:
         if not self._started:
             return
         try:
-            await wait_for_mutations()
-            if self.plugin_host is not None:
-                await self.plugin_host.close_and_wait()
-                unregister_host(self.plugin_host)
             from octop.infra.connectors.gateway import agently_auth
 
             await agently_auth.close()

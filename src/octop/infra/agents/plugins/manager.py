@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import concurrent.futures
 import hashlib
 import json
 import logging
@@ -11,17 +9,11 @@ import os
 import re
 import shutil
 import tempfile
-import threading
 import urllib.error
 import urllib.request
-import weakref
 import zipfile
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass
-from functools import wraps
 from pathlib import Path
-from typing import Any, Concatenate, cast
+from typing import Any
 from urllib.parse import urlparse
 
 import yaml
@@ -34,7 +26,6 @@ from octop_harness.plugins import (
     unload_plugin,
 )
 
-from octop.infra.agents.plugins.host import PluginHost
 from octop.infra.agents.plugins.legacy_imports import ensure_legacy_harness_agent_alias
 from octop.infra.db.repos.control_files import ControlFileRepo
 from octop.infra.db.repos.settings import SettingsRepo
@@ -58,233 +49,6 @@ logger = logging.getLogger(__name__)
 PLUGINS_ENABLED = "plugins.enabled"
 PLUGINS_REVISION = "plugins.revision"
 
-@dataclass(frozen=True)
-class RegistryMutationState:
-    epoch: int
-    in_progress: bool
-
-
-_coordinator_lock = threading.RLock()
-_coordinator_hosts: weakref.WeakSet[PluginHost] = weakref.WeakSet()
-_coordinator_epoch = 0
-_coordinator_in_progress = False
-_coordinator_owner = False
-_coordinator_waiters: list[concurrent.futures.Future[None]] = []
-_coordinator_idle_waiters: list[concurrent.futures.Future[None]] = []
-_coordinator_retired_tasks: dict[asyncio.Task[Any], weakref.WeakSet[PluginHost]] = {}
-_mutation_permit = threading.local()
-
-
-def register_host(host: PluginHost) -> None:
-    """Register an empty runtime Host before its first plugin bind."""
-    with _coordinator_lock:
-        if _coordinator_in_progress:
-            raise RuntimeError("cannot register a plugin Host during a registry mutation")
-        if host.active_plugins:
-            raise RuntimeError("plugin Host must be registered before its first bind")
-        _coordinator_hosts.add(host)
-
-
-def unregister_host(host: PluginHost) -> None:
-    """Remove a runtime Host after its close and task drain have completed."""
-    with _coordinator_lock:
-        _prune_retired_tasks_locked()
-        if not host.is_closed or host.active_plugins:
-            raise RuntimeError("plugin Host must be closed before it is unregistered")
-        if any(host in owners for owners in _coordinator_retired_tasks.values()):
-            raise RuntimeError("cannot unregister Host with pending plugin cleanup")
-        _coordinator_hosts.discard(host)
-
-
-def current_state() -> RegistryMutationState:
-    """Return the process registry epoch and mutation admission state atomically."""
-    with _coordinator_lock:
-        return RegistryMutationState(_coordinator_epoch, _coordinator_in_progress)
-
-
-@contextmanager
-def registry_state_guard() -> Iterator[RegistryMutationState]:
-    """Hold the coordinator's short state lock for atomic mount admission/publication."""
-    with _coordinator_lock:
-        yield RegistryMutationState(_coordinator_epoch, _coordinator_in_progress)
-
-
-def _require_mutation_permit(manager: PluginManager) -> None:
-    if getattr(_mutation_permit, "depth", 0):
-        return
-    with _coordinator_lock:
-        if manager.host is not None or _coordinator_hosts:
-            raise RuntimeError("runtime plugin mutation requires async mutate()")
-
-
-def _with_mutation_permit(operation: Callable[[], Any]) -> Any:
-    depth = getattr(_mutation_permit, "depth", 0)
-    _mutation_permit.depth = depth + 1
-    try:
-        return operation()
-    finally:
-        _mutation_permit.depth = depth
-
-
-def _begin_reservation() -> None:
-    global _coordinator_epoch, _coordinator_in_progress
-    with _coordinator_lock:
-        _coordinator_epoch += 1
-        _coordinator_in_progress = True
-
-
-async def _acquire_reservation() -> None:
-    global _coordinator_owner
-    with _coordinator_lock:
-        if not _coordinator_owner:
-            _coordinator_owner = True
-            _begin_reservation()
-            return
-        waiter: concurrent.futures.Future[None] = concurrent.futures.Future()
-        _coordinator_waiters.append(waiter)
-    try:
-        await asyncio.wrap_future(waiter)
-    except asyncio.CancelledError:
-        if waiter.running() or (waiter.done() and not waiter.cancelled()):
-            _release_reservation()
-        raise
-    _begin_reservation()
-
-
-def _is_plugin_task(task: asyncio.Task[Any] | None) -> bool:
-    if task is None:
-        return False
-    with _coordinator_lock:
-        hosts = tuple(_coordinator_hosts)
-    return any(host.owns_task(task) for host in hosts)
-
-
-def _release_reservation() -> None:
-    global _coordinator_owner, _coordinator_in_progress
-    with _coordinator_lock:
-        while _coordinator_waiters:
-            waiter = _coordinator_waiters.pop(0)
-            if _notify_reservation_waiter(waiter):
-                break
-        else:
-            _coordinator_owner = False
-            _coordinator_in_progress = False
-            idle_waiters = tuple(_coordinator_idle_waiters)
-            _coordinator_idle_waiters.clear()
-            for idle_waiter in idle_waiters:
-                _notify_reservation_waiter(idle_waiter)
-            return
-
-
-def _notify_reservation_waiter(waiter: concurrent.futures.Future[None]) -> bool:
-    """Claim a Future atomically with cancellation before delivering its grant."""
-    if not waiter.set_running_or_notify_cancel():
-        return False
-    waiter.set_result(None)
-    return True
-
-
-def _prune_retired_tasks_locked() -> None:
-    for task in tuple(_coordinator_retired_tasks):
-        if task.done():
-            _coordinator_retired_tasks.pop(task, None)
-
-
-def _retain_retired_tasks(
-    groups: tuple[tuple[PluginHost, tuple[asyncio.Task[Any], ...]], ...],
-) -> tuple[asyncio.Task[Any], ...]:
-    with _coordinator_lock:
-        _prune_retired_tasks_locked()
-        for host, tasks in groups:
-            for task in tasks:
-                owners = _coordinator_retired_tasks.setdefault(task, weakref.WeakSet())
-                owners.add(host)
-        return tuple(_coordinator_retired_tasks)
-
-
-async def _run_mutation[R](
-    operation: Callable[[], R], manager: PluginManager | None, initiator: asyncio.Task[Any] | None
-) -> R:
-    try:
-        with _coordinator_lock:
-            hosts = tuple(_coordinator_hosts)
-        if manager is not None and manager.host is not None and manager.host not in hosts:
-            raise RuntimeError("plugin manager Host must be registered before runtime mutation")
-        if initiator is not None and any(host.owns_task(initiator) for host in hosts):
-            raise RuntimeError("a plugin action cannot mutate its own Registry generation")
-
-        def invalidate() -> tuple[tuple[PluginHost, tuple[asyncio.Task[Any], ...]], ...]:
-            groups: list[tuple[PluginHost, tuple[asyncio.Task[Any], ...]]] = []
-            for host in hosts:
-                tasks: list[asyncio.Task[Any]] = []
-                for plugin_id in tuple(host.active_plugins):
-                    tasks.extend(host.deactivate(plugin_id))
-                if tasks:
-                    groups.append((host, tuple(dict.fromkeys(tasks))))
-            return tuple(groups)
-
-        groups = await asyncio.get_running_loop().run_in_executor(None, invalidate)
-        tasks = _retain_retired_tasks(groups)
-        from octop.infra.agents.plugins.host import drain_plugin_tasks
-
-        await drain_plugin_tasks(tasks)
-        with _coordinator_lock:
-            _prune_retired_tasks_locked()
-        raw_result = await asyncio.get_running_loop().run_in_executor(
-            None, _with_mutation_permit, operation
-        )
-        host = None if manager is None else manager.host
-        if manager is not None and host is not None:
-
-            def rebind() -> None:
-                enabled = manager.global_enabled_map()
-                active = set(host.active_plugins)
-                for plugin in PluginRegistry().all_loaded():
-                    plugin_id = plugin.manifest.id
-                    if enabled.get(plugin_id, True) is not False and plugin_id not in active:
-                        manager._bind_loaded(plugin)
-
-            await asyncio.get_running_loop().run_in_executor(None, _with_mutation_permit, rebind)
-        return cast(R, raw_result)
-    finally:
-        _release_reservation()
-
-
-async def mutate[R](
-    operation: Callable[[], R],
-    *,
-    manager: PluginManager | None = None,
-    affected_plugin_ids: frozenset[str] | None = None,
-) -> R:
-    """Serialize runtime Registry changes, draining every registered Host first."""
-    del affected_plugin_ids  # The global epoch deliberately invalidates every Host.
-    initiator = asyncio.current_task()
-    if _is_plugin_task(initiator):
-        raise RuntimeError("a plugin action cannot mutate its own Registry generation")
-    await _acquire_reservation()
-    if _is_plugin_task(initiator):
-        _release_reservation()
-        raise RuntimeError("a plugin action cannot mutate its own Registry generation")
-    owner = asyncio.create_task(_run_mutation(operation, manager, initiator))
-    owner.add_done_callback(_consume_mutation_result)
-    return await asyncio.shield(owner)
-
-
-def _consume_mutation_result(task: asyncio.Task[Any]) -> None:
-    if not task.cancelled():
-        task.exception()
-
-
-async def wait_for_mutations() -> None:
-    """Wait until active and already queued registry mutations have finished."""
-    with _coordinator_lock:
-        if not _coordinator_in_progress:
-            return
-        waiter: concurrent.futures.Future[None] = concurrent.futures.Future()
-        _coordinator_idle_waiters.append(waiter)
-    await asyncio.wrap_future(waiter)
-
-
 _MAX_PLUGIN_ARCHIVE_BYTES = 100 * 1024 * 1024
 _MAX_PLUGIN_ZIP_ENTRIES = 2_000
 _MAX_PLUGIN_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
@@ -301,22 +65,6 @@ _GITHUB_BLOB_RE = re.compile(
 
 
 _CHANNEL_FINGERPRINTS: dict[str, str] = {}
-
-
-def _lifecycle_serialized[**P, R](
-    method: Callable[Concatenate[PluginManager, P], R],
-) -> Callable[Concatenate[PluginManager, P], R]:
-    @wraps(method)
-    def serialized(
-        self: PluginManager,
-        *args: P.args,
-        **kwargs: P.kwargs,
-    ) -> R:
-        _require_mutation_permit(self)
-        with self._lifecycle_lock:
-            return method(self, *args, **kwargs)
-
-    return cast(Callable[Concatenate["PluginManager", P], R], serialized)
 
 
 def _channel_fingerprint(directory: Path) -> str:
@@ -649,19 +397,11 @@ _MARKET_ASSET_SUFFIXES = frozenset({".svg", ".png", ".jpg", ".jpeg", ".webp", ".
 
 
 class PluginManager:
-    def __init__(
-        self,
-        *,
-        plugins_dir: Path,
-        config_path: Path,
-        host: PluginHost | None = None,
-    ) -> None:
+    def __init__(self, *, plugins_dir: Path, config_path: Path) -> None:
         self._plugins_dir = plugins_dir
         self._config_path = config_path
         self._control_files: ControlFileRepo | None = None
         self._plugin_settings: SettingsRepo | None = None
-        self._host = host
-        self._lifecycle_lock = threading.RLock()
         self._plugins_dir.mkdir(parents=True, exist_ok=True)
         # Last-known tool metadata so Admin / Experts can still list tools after
         # a global disable unloads the plugin from the process registry.
@@ -671,14 +411,6 @@ class PluginManager:
     @property
     def plugins_dir(self) -> Path:
         return self._plugins_dir
-
-    @property
-    def host(self) -> PluginHost | None:
-        return self._host
-
-    async def mutate[R](self, operation: Callable[[], R]) -> R:
-        """Run an application lifecycle operation through the process coordinator."""
-        return await mutate(operation, manager=self)
 
     def global_enabled_map(self) -> dict[str, bool]:
         settings = self._plugin_settings
@@ -797,7 +529,6 @@ class PluginManager:
         )
         self._bump_plugin_revision()
 
-    @_lifecycle_serialized
     def seed_bundled(self) -> list[str]:
         """Upgrade already-installed bundled plugins when catalog versions are newer."""
         from octop.infra.agents.plugins.bundled import default_bundled_plugins_root
@@ -872,9 +603,6 @@ class PluginManager:
                 and _version_tuple(version) > _version_tuple(installed_version)
             ),
         }
-    @_lifecycle_serialized
-    def install_from_market(self, plugin_id: str, *, force: bool = False) -> LoadedPlugin:
-        """Install a catalog plugin by copying the in-tree package locally.
 
     def install_from_market(
         self,
@@ -957,14 +685,10 @@ class PluginManager:
             raise OctopError(ErrorCode.NOT_FOUND, "invalid marketplace asset path")
         return self._resolve_plugin_asset(plugin_dir, cleaned)
 
-    @_lifecycle_serialized
     def load_installed(self, *, install_deps: bool = True) -> list[LoadedPlugin]:
         self._ensure_plugin_cache()
         enabled = self.global_enabled_map()
         previous = {plugin.manifest.id: plugin for plugin in PluginRegistry().all_loaded()}
-        if self._host is not None:
-            for plugin_id in tuple(self._host.active_plugins):
-                self._host.deactivate(plugin_id)
         PluginRegistry().clear()
         loaded: list[LoadedPlugin] = []
         for plugin_dir in discover_plugin_dirs(self._plugins_dir):
@@ -986,11 +710,9 @@ class PluginManager:
                     and _CHANNEL_FINGERPRINTS.get(manifest.id) == fingerprint
                 ):
                     PluginRegistry().register(old)
-                    plugin = old
+                    loaded.append(old)
                 else:
-                    plugin = _load_plugin_dir(plugin_dir, install_deps=install_deps)
-                self._bind_loaded(plugin)
-                loaded.append(plugin)
+                    loaded.append(_load_plugin_dir(plugin_dir, install_deps=install_deps))
                 if str(manifest.kind) == "channel":
                     _CHANNEL_FINGERPRINTS[manifest.id] = fingerprint
             except Exception as exc:
@@ -1002,12 +724,9 @@ class PluginManager:
                 )
         for plugin_id, is_on in enabled.items():
             if not is_on:
-                if self._host is not None:
-                    self._host.deactivate(plugin_id)
                 unload_plugin(plugin_id)
         return [p for p in loaded if enabled.get(p.manifest.id, True) is not False]
 
-    @_lifecycle_serialized
     def load_missing(self, *, install_deps: bool = False) -> list[LoadedPlugin]:
         """Load any on-disk plugins that are not yet in the process registry.
 
@@ -1029,9 +748,7 @@ class PluginManager:
             if PluginRegistry().get(manifest.id) is not None:
                 continue
             try:
-                plugin = _load_plugin_dir(plugin_dir, install_deps=install_deps)
-                self._bind_loaded(plugin)
-                newly.append(plugin)
+                newly.append(_load_plugin_dir(plugin_dir, install_deps=install_deps))
                 logger.info(
                     "loaded missing plugin %s v%s",
                     manifest.id,
@@ -1045,16 +762,6 @@ class PluginManager:
                     exc_info=True,
                 )
         return newly
-
-    def _bind_loaded(self, plugin: LoadedPlugin) -> None:
-        if self._host is None:
-            return
-        try:
-            self._host.bind_context(plugin.context, str(plugin.manifest.version))
-        except BaseException:
-            if PluginRegistry().get(plugin.manifest.id) is plugin:
-                unload_plugin(plugin.manifest.id)
-            raise
 
     @staticmethod
     def _channel_registration_error(plugin_id: str) -> str | None:
@@ -1119,7 +826,6 @@ class PluginManager:
             )
         return out
 
-    @_lifecycle_serialized
     def set_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
         """Toggle global plugin enablement in ``config.json`` and load/unload registry."""
         plugin_dir = self.plugin_dir(plugin_id)
@@ -1137,8 +843,7 @@ class PluginManager:
         if enabled:
             if PluginRegistry().get(plugin_id) is None:
                 try:
-                    plugin = _load_plugin_dir(plugin_dir, install_deps=False)
-                    self._bind_loaded(plugin)
+                    _load_plugin_dir(plugin_dir, install_deps=False)
                 except Exception as exc:
                     raise OctopError(
                         ErrorCode.PLUGIN_INSTALL_FAILED,
@@ -1146,8 +851,6 @@ class PluginManager:
                         details={"reason": str(exc)},
                     ) from exc
         else:
-            if self._host is not None:
-                self._host.deactivate(plugin_id)
             loaded = PluginRegistry().get(plugin_id)
             if loaded is not None:
                 self._tool_catalog[plugin_id] = [
@@ -1227,8 +930,6 @@ class PluginManager:
         expect_version: str | None = None,
     ) -> LoadedPlugin:
         self._ensure_plugin_cache()
-    @_lifecycle_serialized
-    def install_path(self, source: Path, *, force: bool = False) -> LoadedPlugin:
         source = source.resolve()
         if not source.is_dir():
             raise OctopError(
@@ -1260,16 +961,12 @@ class PluginManager:
                     f"plugin already installed: {manifest.id}",
                     details={"id": manifest.id},
                 )
-            if self._host is not None:
-                self._host.deactivate(manifest.id)
             shutil.rmtree(dest)
         shutil.copytree(source, dest)
         self._persist_plugin_tree(manifest.id)
         unload_plugin(manifest.id)
         try:
-            loaded = _load_plugin_dir(dest, install_deps=True)
-            self._bind_loaded(loaded)
-            return loaded
+            return _load_plugin_dir(dest, install_deps=True)
         except Exception as exc:
             raise OctopError(
                 ErrorCode.PLUGIN_INSTALL_FAILED,
@@ -1285,8 +982,6 @@ class PluginManager:
         expect_id: str | None = None,
         expect_version: str | None = None,
     ) -> LoadedPlugin:
-    @_lifecycle_serialized
-    def install_archive(self, archive: Path, *, force: bool = False) -> LoadedPlugin:
         """Install a plugin from a local ZIP archive.
 
         The archive must contain exactly one plugin directory (at the zip root
@@ -1359,8 +1054,6 @@ class PluginManager:
         expect_id: str | None = None,
         expect_version: str | None = None,
     ) -> LoadedPlugin:
-    @_lifecycle_serialized
-    def install_url(self, url: str, *, force: bool = False) -> LoadedPlugin:
         resolved = normalize_plugin_download_url(url)
         _assert_http_url(resolved)
         with tempfile.TemporaryDirectory() as tmp:
@@ -1382,10 +1075,7 @@ class PluginManager:
                     details=exc.details,
                 ) from exc
 
-    @_lifecycle_serialized
     def uninstall(self, plugin_id: str) -> None:
-        if self._host is not None:
-            self._host.deactivate(plugin_id)
         unload_plugin(plugin_id)
         self._tool_catalog.pop(plugin_id, None)
         self._skill_catalog.pop(plugin_id, None)
