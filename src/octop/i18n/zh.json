@@ -351,7 +351,7 @@
       "callback_save_failed": "保存授权失败：{detail}",
       "callback_success": "授权完成，可关闭此窗口。",
       "authorization_denied": "授权未完成。",
-      "safe_upstream_error": "Composio 未能完成授权请求。"
+      "safe_upstream_error": "授权服务未能完成该请求。"
     },
     "qq_mail": {
       "unknown_tool": "未知邮箱工具：{tool}。",

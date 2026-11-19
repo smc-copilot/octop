@@ -1,12 +1,20 @@
 # Octop Composio 实施与验收记录
 
+> **状态（2026-11-19）：已废弃**
+> SMC 自定义个人 Composio 已从 feature/ver1.1 移除。请改用 Octop 通用远程 MCP／Custom MCP（相对 TencentCloud origin/main）。本文仅作历史档案。
+
+
+> **合入状态（统一相对 TencentCloud `origin/main`）**  
+> 本记录对应的个人 Composio 能力**未合入**上游 `main` / `develop`；代码在 SMC `feature/ver1.1`（引入 `68b418bb`）。  
+> 验收结论仅针对当时 fork 线实现。现行通用连接器行为以 `origin/main` 为准；公开 `docs/connectors.md` 与 main 对齐、无 Composio 专节。
+
 日期：2026-10-27，完成于 2026-10-28。状态：个人 Composio 连接、真实 MCP 握手与应用发现验收通过；按用户要求未新增应用授权。
 
 - 需求：[PRD v1.1](Octop_Composio公网连接扩展_需求PRD_v1.0_2026-10-27.md)。
 - 计划：[实施执行计划](Octop_Composio实施执行计划_2026-10-27.md)。
 - 外部协议证据：[技术验证报告](Octop_Composio技术验证报告_2026-10-27.md)。
 - 执行模型：所有执行与独立审查子代理均使用 `gpt-6-luna`。
-- 工作方式：在当前 `codex/enterprise-p1` checkout 补齐既有未提交实现，保留无关修改；未提交或推送。
+- 工作方式：当时在 `codex/enterprise-p1` checkout 补齐实现；后续合入 SMC `feature/ver1.x`，**未**合入 TencentCloud `main`。
 
 ## 已完成的聚焦检查
 

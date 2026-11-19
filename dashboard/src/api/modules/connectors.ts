@@ -322,67 +322,6 @@ export const connectorsApi = {
   oauthPending: (stateId: string) =>
     request<OAuthPendingResult>(`/connectors/oauth/pending/${stateId}`),
 
-  oauthCancel: (stateId: string) =>
-    request<{ cancelled: boolean }>("/connectors/oauth/cancel", {
-      method: "POST",
-      body: JSON.stringify({ state_id: stateId }),
-    }),
-
-  composioGet: () =>
-    request<{ connected: boolean; connection: ComposioConnection | null }>(
-      "/connectors/composio",
-    ),
-
-  composioCheck: () =>
-    request<{ connection: ComposioConnection }>("/connectors/composio/check", {
-      method: "POST",
-    }),
-
-  composioDisable: () =>
-    request<{ connection: ComposioConnection }>(
-      "/connectors/composio/disable",
-      { method: "POST" },
-    ),
-
-  composioEnable: () =>
-    request<{ connection: ComposioConnection }>("/connectors/composio/enable", {
-      method: "POST",
-    }),
-
-  composioDisconnect: () =>
-    request<{ ok: boolean }>("/connectors/composio/disconnect", {
-      method: "POST",
-    }),
-
-  composioSearchApps: (query: string) =>
-    request<{
-      query: string;
-      apps: ComposioAppSummary[];
-      source: string;
-      partial: boolean;
-    }>("/connectors/composio/apps/search", {
-      method: "POST",
-      body: JSON.stringify({ query }),
-    }),
-
-  composioAuthorizeApp: (toolkit: string) =>
-    request<{
-      toolkit: string;
-      result: ComposioAppAuthorizationResult;
-      source: string;
-    }>("/connectors/composio/apps/authorize", {
-      method: "POST",
-      body: JSON.stringify({ toolkit }),
-    }),
-
-  composioAppStatus: (toolkit: string) =>
-    request<{
-      toolkit: string | null;
-      result: unknown;
-      source: string;
-      status: "unavailable" | "unknown" | string;
-    }>(`/connectors/composio/apps/${encodeURIComponent(toolkit)}/status`),
-
   authorizeUrl: (kind: string) =>
     request<{ authorize_url: string | null }>(
       `/connectors/auth/${kind}/authorize-url`,

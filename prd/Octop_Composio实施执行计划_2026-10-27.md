@@ -1,5 +1,13 @@
 # Octop Composio Personal Connection Implementation Plan
 
+> **状态（2026-11-19）：已废弃**
+> SMC 自定义个人 Composio 已从 feature/ver1.1 移除。请改用 Octop 通用远程 MCP／Custom MCP（相对 TencentCloud origin/main）。本文仅作历史档案。
+
+
+> **合入状态（统一相对 TencentCloud `origin/main`）**  
+> 本计划对应的个人 Composio 实现**未合入**上游 `main` / `develop`；落在 SMC `feature/ver1.1`（`68b418bb`）。  
+> 实施与复查时：通用连接器行为先对齐 `origin/main`，再叠加本计划的 Composio 专属改动。勿把 `#2915` / `#2929` 等上游能力记成 Composio 提交。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. User explicitly requested GPT-6 Luna subagents; all delegated workers and reviewers use `gpt-6-luna`.
 
 **Goal:** 按 PRD v1.1 补齐现有 Composio 个人连接实现，完成自动验证，并准确区分已实现与仍待真实授权的能力。

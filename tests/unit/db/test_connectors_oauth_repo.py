@@ -24,7 +24,7 @@ def _state(repo: ConnectorRepo, user_id: int, *, state_id: str | None = None) ->
         state_id=identifier,
         state=f"state-{identifier}",
         user_id=user_id,
-        kind="composio-connect",
+        kind="notion",
         code_verifier="verifier",
     )
     return identifier
@@ -71,42 +71,8 @@ def test_cancel_oauth_state_requires_owner_and_kind(db: SqlitePool) -> None:
     other_id = UserRepo(db).create(username="oauth_other", password_hash="hash", role="user")
     state_id = _state(repo, owner_id)
 
-    assert (
-        repo.cancel_oauth_state(state_id=state_id, user_id=other_id, kind="composio-connect")
-        is None
-    )
+    assert repo.cancel_oauth_state(state_id=state_id, user_id=other_id, kind="notion") is None
     assert repo.get_oauth_state_by_id(state_id) is not None
-    assert repo.cancel_oauth_state(state_id=state_id, user_id=owner_id, kind="notion") is None
-    assert (
-        repo.cancel_oauth_state(state_id=state_id, user_id=owner_id, kind="composio-connect")
-        is not None
-    )
+    assert repo.cancel_oauth_state(state_id=state_id, user_id=owner_id, kind="github") is None
+    assert repo.cancel_oauth_state(state_id=state_id, user_id=owner_id, kind="notion") is not None
     assert repo.get_oauth_state_by_id(state_id) is None
-
-
-def test_composio_connection_has_durable_per_user_uniqueness(db: SqlitePool) -> None:
-    repo = ConnectorRepo(db)
-    user_id = UserRepo(db).create(username="composio_singleton", password_hash="hash", role="user")
-
-    def create(instance_id: str, kind: str = "composio-connect") -> None:
-        repo.create(
-            instance_id=instance_id,
-            user_id=user_id,
-            kind=kind,
-            display_name=instance_id,
-            mcp_server_name=f"mcp-{instance_id}",
-        )
-
-    create("composio-one")
-    assert (
-        repo.create(
-            instance_id="composio-two",
-            user_id=user_id,
-            kind="composio-connect",
-            display_name="composio-two",
-            mcp_server_name="mcp-composio-two",
-        )
-        == "composio-one"
-    )
-    create("github-one", kind="github")
-    create("github-two", kind="github")

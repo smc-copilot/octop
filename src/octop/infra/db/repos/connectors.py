@@ -3,15 +3,9 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import time
 from dataclasses import dataclass
 from typing import Any
-
-try:
-    from psycopg import errors as pg_errors
-except ImportError:  # pragma: no cover - optional PostgreSQL driver
-    pg_errors = None  # type: ignore[assignment]
 
 from octop.infra.db.pool import DatabasePool
 from octop.infra.db.repos._base import DbRow, bool_int, map_rows, now_ts
@@ -114,40 +108,24 @@ class ConnectorRepo:
         shared: bool = False,
     ) -> str:
         ts = now_ts()
-        try:
-            with self._db.transaction() as conn:
-                conn.execute(
-                    "INSERT INTO connectors("
-                    "instance_id, user_id, kind, display_name, status, shared, mcp_server_name, "
-                    "config_json, created_at, updated_at"
-                    ") VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)",
-                    (
-                        instance_id,
-                        user_id,
-                        kind,
-                        display_name,
-                        bool_int(shared),
-                        mcp_server_name,
-                        config_json,
-                        ts,
-                        ts,
-                    ),
-                )
-        except Exception as exc:
-            is_composio_singleton_conflict = kind == "composio-connect" and (
-                isinstance(exc, sqlite3.IntegrityError)
-                and "unique constraint failed: connectors.user_id" in str(exc).lower()
-                or pg_errors is not None
-                and isinstance(exc, pg_errors.UniqueViolation)
-                and getattr(getattr(exc, "diag", None), "constraint_name", None)
-                == "idx_connectors_composio_user"
+        with self._db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO connectors("
+                "instance_id, user_id, kind, display_name, status, shared, mcp_server_name, "
+                "config_json, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)",
+                (
+                    instance_id,
+                    user_id,
+                    kind,
+                    display_name,
+                    bool_int(shared),
+                    mcp_server_name,
+                    config_json,
+                    ts,
+                    ts,
+                ),
             )
-            if not is_composio_singleton_conflict:
-                raise
-            winner = self.get_by_user_kind(user_id, kind)
-            if winner is None:
-                raise
-            return winner.instance_id
         return instance_id
 
     def get(self, instance_id: str) -> ConnectorRow | None:
@@ -186,7 +164,7 @@ class ConnectorRepo:
             clause = group_visibility_sql(RESOURCE_CONNECTOR, "c.instance_id")
             rows = conn.execute(
                 "SELECT c.* FROM connectors c "
-                "WHERE (c.user_id = ? OR (c.shared = 1 AND c.kind != 'composio-connect')) "
+                "WHERE (c.user_id = ? OR c.shared = 1) "
                 f"AND (c.user_id = ? OR {clause}) "
                 "ORDER BY c.display_name, c.instance_id",
                 (user_id, user_id, user_id),

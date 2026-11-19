@@ -1,4 +1,4 @@
-import { App, Tag, Switch, Tooltip, Typography } from "antd";
+import { App, Switch, Tooltip, Typography } from "antd";
 import {
   SharedAvatarMark,
   SharedResourceBadge,
@@ -36,12 +36,9 @@ export function ConnectorInstanceCard({
   const isOwner = user?.id === instance.owner_user_id;
   const ownerLabel =
     instance.owner_display_name || instance.owner_username || "";
-  const isComposio = instance.kind === "composio-connect";
   const editable =
     instance.can_manage &&
-    (isComposio ||
-      catalogEntry != null ||
-      (instance.kind === "custom-mcp" && isOwner));
+    (catalogEntry != null || (instance.kind === "custom-mcp" && isOwner));
 
   const handleDelete = () => {
     modal.confirm({
@@ -110,30 +107,13 @@ export function ConnectorInstanceCard({
               owned
               ownerName={ownerLabel}
             />
-            {isComposio ? (
-              <>
-                <Tag className={styles.instanceCardTag}>
-                  {t("connectors.composio.source")}
-                </Tag>
-                <Tag
-                  color={instance.status === "active" ? "green" : "default"}
-                  className={styles.instanceCardTag}
-                >
-                  {t(
-                    instance.status === "active"
-                      ? "connectors.composio.statusEnabled"
-                      : "connectors.composio.statusDisabled",
-                  )}
-                </Tag>
-              </>
-            ) : null}
           </div>
           <div
             className={styles.instanceCardHeaderActions}
             onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => e.stopPropagation()}
           >
-            {instance.can_manage && !isComposio ? (
+            {instance.can_manage ? (
               <Switch
                 size="small"
                 checked={instance.status === "active"}
@@ -159,7 +139,7 @@ export function ConnectorInstanceCard({
             ? t("connectors.clickToManage", "点击管理连接")
             : t("connectors.sharedReadonly", "共享连接器，仅所有者可管理")}
         </div>
-        {instance.can_manage && !isComposio ? (
+        {instance.can_manage ? (
           <div
             className={styles.instanceCardActions}
             onClick={(e) => e.stopPropagation()}

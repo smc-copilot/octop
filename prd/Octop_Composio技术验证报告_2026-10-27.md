@@ -1,5 +1,13 @@
 # Octop Composio 技术验证报告（M0）
 
+> **状态（2026-11-19）：已废弃**
+> SMC 自定义个人 Composio 已从 feature/ver1.1 移除。请改用 Octop 通用远程 MCP／Custom MCP（相对 TencentCloud origin/main）。本文仅作历史档案。
+
+
+> **合入状态（统一相对 TencentCloud `origin/main`）**  
+> 本文只记录个人 Composio 验证证据；该能力**未合入**上游 `main` / `develop`，实现落在 SMC `feature/ver1.1`（`68b418bb`）。  
+> 通用连接器 OAuth／再授权等行为以 `origin/main` 为准，不在本报告范围。`docs/connectors.md` 与 main 对齐，无 Composio 专节。
+
 ## 当前真实验证状态（实施阶段更新）
 
 2026-10-27，隔离 Octop 测试环境通过产品 OAuth 流程保存了一个个人 Composio 连接，MCP SDK 的 `initialize` 与 `tools/list` 成功，当前上游返回 11 个工具。页面显示已认证、MCP 可连接；未验证远端账户身份，因此没有显示邮箱。后续曾观察到无效 state 回调页，但已保存连接仍有效，重复访问／页面回跳原因尚待核查，不能仅据该错误页断言首次交换失败。

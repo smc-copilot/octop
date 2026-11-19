@@ -4,8 +4,11 @@ prd_id: PRD-OCTOP-COMPOSIO-PERSONAL
 version: 1.1
 status: READY_FOR_TECHNICAL_VALIDATION
 created_at: 2026-10-27
-updated_at: 2026-10-27
+updated_at: 2026-11-19
 ---
+
+> **状态（2026-11-19）：已废弃**  
+> SMC 自定义个人 Composio 已从 `feature/ver1.1` 移除。请改用 Octop 通用远程 MCP／Custom MCP（相对 TencentCloud `origin/main`）。本文仅作历史需求档案。
 
 > v1.1 变更（2026-10-27）：根据 PRD 评审（grilling）补充 5 项用户决策（§1.2）、源码核查发现的隔离与凭证缺陷 A–D（§2.2.1）、V-01 匿名探测结果（§9.1.1），并相应修订 §4.2、§5.1、§5.2、§6、§7.1、§9.1、§10、§11。
 
@@ -18,9 +21,11 @@ updated_at: 2026-10-27
 | 用途 | 交给 Cursor 进行技术验证、功能实施和验收 |
 | 产品方向 | 每位 Octop 用户连接自己的 Composio 账户，通过 Composio 公网服务使用外部应用 |
 | 需求状态 | 个人账户方向已由用户确认；本文将讨论结果固化为实施范围，外部接口兼容性尚未实测 |
-| 源码核查基线 | `69d50fdd7c583f58895b6a1127befffd7b5a27a7`，分支 `codex/enterprise-p1` |
-| 开发目录 | `E:\git\octop`；后续实施继续使用当前 checkout，遵守根目录 `AGENTS.md` |
-| 本次文档交付 | 仅需求文档，不代表产品功能已开发、真实账户已连接或外部接口已通过验收 |
+| 上游基线 | TencentCloud `origin/main`（Composio **不在**上游；通用连接器行为以 main 为准） |
+| 实现落点 | SMC `feature/ver1.1`（经 `feature/ver1.0` / `hotfix/connector_by_composio`）；引入提交 `68b418bb` |
+| 源码核查基线（历史） | 初稿相对 `69d50fdd…` / `codex/enterprise-p1`；现行 diff 请对 `origin/main...HEAD` |
+| 开发目录 | 遵守根目录 `AGENTS.md` 的本地开发目录约定 |
+| 本次文档交付 | 仅需求文档，不代表产品功能已合入上游或对外发布 |
 | 参考材料 | 用户提供的两张 Paperclip 连接器截图；第 13 节列出的官方资料及仓库代码 |
 
 MUST／必须为验收要求；P0 为首期必需；P1 为满足能力条件后才实施的增强。文中的 Octop 接口与数据契约是本项目要求，不是声称 Composio 已提供同名 API。Cursor 应先完成第 9 节技术验证，再按结果实施；不能以假数据代替验证，不能静默切换为公司统一 API Key 方案。

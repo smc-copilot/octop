@@ -17,7 +17,7 @@ _FINGERPRINT_KEYS = (
     "command",
     "args",
     "env",
-    # Bumped on Composio reconnect / credential rotation so cache cannot reuse
+    # Bumped on OAuth reconnect / credential rotation so cache cannot reuse
     # tools from a previous account or generation.
     "credential_gen",
 )

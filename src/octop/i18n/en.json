@@ -351,7 +351,7 @@
       "callback_save_failed": "Failed to save authorization: {detail}",
       "callback_success": "Authorization complete. You may close this window.",
       "authorization_denied": "Authorization was not completed.",
-      "safe_upstream_error": "Composio could not complete the authorization request."
+      "safe_upstream_error": "The authorization provider could not complete the request."
     },
     "qq_mail": {
       "unknown_tool": "Unknown mailbox tool: {tool}.",

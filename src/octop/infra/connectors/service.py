@@ -19,7 +19,6 @@ from octop.infra.connectors.auth_status import (
 )
 from octop.infra.connectors.builder import build_http_mcp_spec, mcp_server_name, new_internal_token
 from octop.infra.connectors.catalog import get_catalog_entry, uses_internal_http_mcp
-from octop.infra.connectors.composio import is_composio_kind
 from octop.infra.connectors.crypto import decrypt_credentials, encrypt_credentials
 from octop.infra.connectors.custom_mcp import (
     CUSTOM_MCP_DISPLAY_NAME,
@@ -710,7 +709,7 @@ class ConnectorService:
             return []
         names: list[str] = []
         for inst in self._repo.list_by_user(user_id):
-            if is_custom_mcp_kind(inst.kind) or is_composio_kind(inst.kind):
+            if is_custom_mcp_kind(inst.kind):
                 continue
             if inst.status != "active" or not inst.has_credentials:
                 continue
