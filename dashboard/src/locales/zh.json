@@ -6717,6 +6717,7 @@
     "expertTemplateRetry": "重新加载",
     "expertTemplateCreator": "发布者：{{username}}",
     "defaultExpertInstallFailed": "用户已创建，但默认专家初始化失败：{{reason}}",
+    "defaultExpertNeedsLocalBackend": "创建默认专家需要允许「本机 Shell」或「文件系统」后端类型，请在资源策略中勾选，或关闭后端类型限制。",
     "createSuccessWithExpert": "已创建用户 {{username}}，默认专家正在初始化",
     "createSectionPolicy": "资源使用策略",
     "policyWorkspaceRoot": "允许的存储根目录",

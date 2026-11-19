@@ -32,15 +32,23 @@ DEFAULT_EXPERT_ID = "general-assistant"
 SETUP_DEFAULT_AGENT_ID = "main"
 
 
-def default_home_local_backend(*, root_dir: str | None = None) -> dict[str, Any]:
+def default_home_local_backend(
+    *,
+    root_dir: str | None = None,
+    backend_type: str = "local_shell",
+) -> dict[str, Any]:
     """Same local backend as the dashboard create-from-expert default.
 
     Defaults to host filesystem root; pass *root_dir* when a user
-    ``workspace_root_dir`` policy applies.
+    ``workspace_root_dir`` policy applies. *backend_type* must be
+    ``local_shell`` or ``filesystem``.
     """
+    kind = (backend_type or "local_shell").strip().lower() or "local_shell"
+    if kind not in {"local_shell", "filesystem"}:
+        kind = "local_shell"
     resolved = (root_dir or "").strip() or host_fs_tree_root()
     return {
-        "type": "local_shell",
+        "type": kind,
         "root_dir": resolved,
         "virtual_mode": True,
     }
@@ -50,6 +58,34 @@ def user_policy_workspace_root(server: Any, user_id: int) -> str | None:
     """Effective ``workspace_root_dir`` policy for *user_id*, or ``None``."""
     return effective_workspace_root_dir(
         server.services.user_policy_repo.get(user_id, POLICY_WORKSPACE_ROOT_DIR)
+    )
+
+
+def resolve_default_expert_backend(server: Any, user_id: int) -> dict[str, Any]:
+    """Pick a local backend allowed by the user's ``allowed_backend_types`` policy.
+
+    Prefers ``local_shell``, then ``filesystem``. Unrestricted policies keep
+    ``local_shell``. Raises :class:`OctopError` when neither local type is
+    permitted (AT-11: do not bypass the allow-list).
+    """
+    from octop.infra.users.resource_policy import (  # noqa: PLC0415
+        POLICY_ALLOWED_BACKEND_TYPES,
+        allowed_backend_types_of,
+    )
+
+    root_dir = user_policy_workspace_root(server, user_id)
+    allowed = allowed_backend_types_of(
+        server.services.user_policy_repo.get(user_id, POLICY_ALLOWED_BACKEND_TYPES)
+    )
+    if not allowed or "local_shell" in allowed:
+        return default_home_local_backend(root_dir=root_dir, backend_type="local_shell")
+    if "filesystem" in allowed:
+        return default_home_local_backend(root_dir=root_dir, backend_type="filesystem")
+    types = ", ".join(allowed)
+    raise OctopError(
+        ErrorCode.BACKEND_TYPE_NOT_ALLOWED,
+        f"backend types not allowed: local_shell (allowed: {types})",
+        details={"types": "local_shell", "allowed": types},
     )
 
 
@@ -279,9 +315,7 @@ async def install_published_default_expert(
         name=row.name,
         description=row.description or "",
         color=row.color or None,
-        backend=default_home_local_backend(
-            root_dir=user_policy_workspace_root(server, int(user.id))
-        ),
+        backend=resolve_default_expert_backend(server, int(user.id)),
         # Intentionally omit providers / MCP / knowledge bases (FR-05).
     )
     try:

@@ -734,6 +734,56 @@ async def test_create_user_published_respects_max_agents_zero(env):
     assert default_expert["agent_id"] is None
 
 
+async def test_create_user_published_falls_back_to_filesystem_backend(env):
+    """When local_shell is forbidden but filesystem is allowed, install still succeeds."""
+    c, server, auth = env
+    expert_id = await _publish_template(c, auth, name="Filesystem fallback")
+    created = await c.post(
+        "/api/users",
+        headers=auth,
+        json={
+            "username": "fs_only_user",
+            "password": "TestPass12",
+            "role": "user",
+            "allowed_backend_types": ["filesystem", "docker"],
+            "create_default_expert": True,
+            "expert_template_source": "published",
+            "expert_template_id": expert_id,
+        },
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["default_expert"]["status"] == "created"
+    agent_id = body["default_expert"]["agent_id"]
+    assert agent_id
+    detail = server.app_runtime.agent_registry.get_config(agent_id)
+    assert (detail.get("backend") or {}).get("type") == "filesystem"
+
+
+async def test_create_user_published_rejects_without_local_backend(env):
+    """AT-11: allow-list without local_shell/filesystem keeps user and reports failure."""
+    c, _server, auth = env
+    expert_id = await _publish_template(c, auth, name="No local backend")
+    created = await c.post(
+        "/api/users",
+        headers=auth,
+        json={
+            "username": "docker_only_user",
+            "password": "TestPass12",
+            "role": "user",
+            "allowed_backend_types": ["docker"],
+            "create_default_expert": True,
+            "expert_template_source": "published",
+            "expert_template_id": expert_id,
+        },
+    )
+    assert created.status_code == 201, created.text
+    default_expert = created.json()["default_expert"]
+    assert default_expert["status"] == "failed"
+    assert default_expert["error_code"] == "BACKEND_TYPE_NOT_ALLOWED"
+    assert default_expert["agent_id"] is None
+
+
 async def test_install_published_default_expert_is_idempotent(env):
     """AT-14: second install for same user+template returns the same agent."""
     from octop.infra.agents.experts.default_agent import install_published_default_expert

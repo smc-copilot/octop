@@ -6717,6 +6717,7 @@
     "expertTemplateRetry": "Retry",
     "expertTemplateCreator": "Publisher: {{username}}",
     "defaultExpertInstallFailed": "User created, but default expert setup failed: {{reason}}",
+    "defaultExpertNeedsLocalBackend": "Creating a default expert requires allowing Local Shell or Filesystem backend types. Include one in the resource policy, or turn off the backend-type limit.",
     "createSuccessWithExpert": "Created user {{username}}; default expert is initializing",
     "createSectionPolicy": "Resource usage policy",
     "policyWorkspaceRoot": "Allowed storage root",

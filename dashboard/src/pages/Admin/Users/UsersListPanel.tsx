@@ -2187,6 +2187,17 @@ export default function UsersListPanel() {
         message.error(t("adminUsers.expertTemplateRequired"));
         return;
       }
+      const backendTypes = values.limit_allowed_backend_types
+        ? values.allowed_backend_types ?? []
+        : null;
+      if (
+        backendTypes &&
+        !backendTypes.includes("local_shell") &&
+        !backendTypes.includes("filesystem")
+      ) {
+        message.error(t("adminUsers.defaultExpertNeedsLocalBackend"));
+        return;
+      }
     }
     setSubmitting(true);
     try {
