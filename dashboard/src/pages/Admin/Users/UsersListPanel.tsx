@@ -71,6 +71,7 @@ import { useTranslation } from "react-i18next";
 import cx from "classnames";
 import { request } from "../../../api/request";
 import { authApi } from "../../../api/modules/auth";
+import { publishedExpertsApi } from "../../../api/modules/publishedExperts";
 import {
   userRolesApi,
   snapshotRoleLabel,
@@ -105,6 +106,11 @@ import { HOST_FS_ROOT } from "../../Experts/components/rootDirTree";
 import { ExpertIcon } from "../../Experts/components/iconForName";
 import expertStyles from "../../Experts/index.module.less";
 import styles from "./index.module.less";
+import {
+  filterExpertTemplateOptions,
+  mapPublishedExpertsToOptions,
+  type ExpertTemplateOption,
+} from "./expertTemplates";
 import {
   deleteUserAvatar,
   ProfileAvatar,
@@ -142,6 +148,17 @@ interface UserRow {
   allowed_backend_types?: string[] | null;
   /** Present when the users list includes MFA status from the backend. */
   mfa_active?: boolean;
+  /** Present on POST /users when create_default_expert was requested. */
+  default_expert?: {
+    requested: boolean;
+    source: string | null;
+    template_id: string | null;
+    status: "not_requested" | "created" | "failed";
+    agent_id: string | null;
+    bootstrap_status: "not_started" | "pending" | "ready" | "failed";
+    error_code: string | null;
+    error_message: string | null;
+  };
 }
 
 export interface PermissionCatalogItem {
@@ -168,36 +185,31 @@ export interface PolicyFormValues {
   allowed_backend_types?: string[];
 }
 
-const DEFAULT_EXPERT_TEMPLATE_ID = "general-assistant";
-
-interface ExpertTemplateOption {
-  id: string;
-  label: string;
-  description?: string;
-  icon_url?: string | null;
-  icon_name?: string | null;
-}
-
 function ExpertTemplatePicker({
   value,
   onChange,
   options,
+  loading,
+  error,
+  empty,
+  onRetry,
 }: {
   value?: string;
   onChange?: (id: string) => void;
   options: ExpertTemplateOption[];
+  loading?: boolean;
+  error?: boolean;
+  empty?: boolean;
+  onRetry?: () => void;
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
   const scrolledFor = useRef<string | null>(null);
-  const needle = query.trim().toLowerCase();
-  const visible = useMemo(() => {
-    if (!needle) return options;
-    return options.filter((item) =>
-      `${item.label} ${item.description ?? ""}`.toLowerCase().includes(needle),
-    );
-  }, [needle, options]);
+  const visible = useMemo(
+    () => filterExpertTemplateOptions(options, query),
+    [options, query],
+  );
 
   useEffect(() => {
     const list = listRef.current;
@@ -213,6 +225,37 @@ function ExpertTemplatePicker({
     }
     scrolledFor.current = value;
   }, [value, visible]);
+
+  if (loading) {
+    return (
+      <div className={styles.expertTemplatePicker}>
+        <Spin size="small" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className={styles.expertTemplatePicker}>
+        <div className={styles.expertTemplateEmpty}>
+          {t("adminUsers.expertTemplateLoadFailed")}
+        </div>
+        <Button size="small" icon={<RefreshCw size={14} />} onClick={onRetry}>
+          {t("adminUsers.expertTemplateRetry")}
+        </Button>
+      </div>
+    );
+  }
+
+  if (empty) {
+    return (
+      <div className={styles.expertTemplatePicker}>
+        <div className={styles.expertTemplateEmpty}>
+          {t("adminUsers.expertTemplateEmpty")}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={styles.expertTemplatePicker}>
@@ -262,6 +305,13 @@ function ExpertTemplatePicker({
                   {item.description ? (
                     <span className={styles.expertTemplateDesc}>
                       {item.description}
+                    </span>
+                  ) : null}
+                  {item.creator_username ? (
+                    <span className={styles.expertTemplateDesc}>
+                      {t("adminUsers.expertTemplateCreator", {
+                        username: item.creator_username,
+                      })}
                     </span>
                   ) : null}
                 </span>
@@ -1689,7 +1739,7 @@ function UserLoginLock({
 }
 
 export default function UsersListPanel() {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const setCurrentUser = useSetCurrentUser();
   const timeZone = useServerTimezone();
   const isMobile = useIsMobile();
@@ -1701,6 +1751,9 @@ export default function UsersListPanel() {
   const [expertTemplates, setExpertTemplates] = useState<
     ExpertTemplateOption[]
   >([]);
+  const [expertTemplatesLoading, setExpertTemplatesLoading] = useState(false);
+  const [expertTemplatesError, setExpertTemplatesError] = useState(false);
+  const [expertTemplatesReload, setExpertTemplatesReload] = useState(0);
   const [pendingUserAvatar, setPendingUserAvatar] = useState<File | null>(null);
   const [pendingUserIcon, setPendingUserIcon] = useState<string | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -2093,47 +2146,48 @@ export default function UsersListPanel() {
   useEffect(() => {
     if (!createOpen) return;
     let cancelled = false;
-    const lang = i18n.language.startsWith("zh") ? "zh" : "en";
-    void request<{
-      items: Array<{
-        slug: string;
-        label: { zh: string; en: string };
-        description?: { zh?: string; en?: string };
-        icon_url?: string | null;
-        icon_name?: string | null;
-      }>;
-    }>("/experts/hub")
-      .then((body) => {
+    setExpertTemplatesLoading(true);
+    setExpertTemplatesError(false);
+    void publishedExpertsApi
+      .list()
+      .then((rows) => {
         if (cancelled) return;
-        const rows = Array.isArray(body.items) ? body.items : [];
-        setExpertTemplates(
-          rows.map((row) => ({
-            id: row.slug,
-            label: row.label?.[lang] || row.label?.en || row.slug,
-            description:
-              row.description?.[lang] || row.description?.en || undefined,
-            icon_url: row.icon_url,
-            icon_name: row.icon_name,
-          })),
+        const options = mapPublishedExpertsToOptions(
+          Array.isArray(rows) ? rows : [],
         );
-        const ids = new Set(rows.map((row) => row.slug));
+        setExpertTemplates(options);
+        setExpertTemplatesError(false);
+        const ids = new Set(options.map((row) => row.id));
         const current = form.getFieldValue("expert_template_id");
         if (typeof current !== "string" || !ids.has(current)) {
-          const next = ids.has(DEFAULT_EXPERT_TEMPLATE_ID)
-            ? DEFAULT_EXPERT_TEMPLATE_ID
-            : rows[0]?.slug;
-          form.setFieldValue("expert_template_id", next);
+          form.setFieldValue("expert_template_id", options[0]?.id);
         }
       })
       .catch(() => {
-        if (!cancelled) setExpertTemplates([]);
+        if (cancelled) return;
+        setExpertTemplates([]);
+        setExpertTemplatesError(true);
+      })
+      .finally(() => {
+        if (!cancelled) setExpertTemplatesLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [createOpen, form, i18n.language]);
+  }, [createOpen, form, expertTemplatesReload]);
 
   const onCreate = async (values: CreateValues) => {
+    const wantExpert = Boolean(values.create_default_expert);
+    if (wantExpert) {
+      if (expertTemplatesLoading || expertTemplatesError) {
+        message.error(t("adminUsers.expertTemplateLoadFailed"));
+        return;
+      }
+      if (expertTemplates.length === 0 || !values.expert_template_id) {
+        message.error(t("adminUsers.expertTemplateRequired"));
+        return;
+      }
+    }
     setSubmitting(true);
     try {
       const created = await request<UserRow>("/users", {
@@ -2149,10 +2203,13 @@ export default function UsersListPanel() {
           permissions: values.role === "admin" ? [] : values.permissions ?? [],
           role_name: values.role_name?.trim() || null,
           ...policyPayload(values, { workspaceRootAllowed }),
-          create_default_expert: Boolean(values.create_default_expert),
-          expert_template_id: values.create_default_expert
-            ? values.expert_template_id || DEFAULT_EXPERT_TEMPLATE_ID
-            : null,
+          create_default_expert: wantExpert,
+          ...(wantExpert
+            ? {
+                expert_template_source: "published",
+                expert_template_id: values.expert_template_id,
+              }
+            : {}),
         }),
       });
       if (pendingUserAvatar) {
@@ -2177,9 +2234,27 @@ export default function UsersListPanel() {
       }
       setPendingUserAvatar(null);
       setPendingUserIcon(null);
-      message.success(
-        t("adminUsers.createSuccess", { username: values.username }),
-      );
+      const defaultExpert = created.default_expert;
+      if (defaultExpert?.status === "failed") {
+        message.warning(
+          t("adminUsers.defaultExpertInstallFailed", {
+            reason:
+              defaultExpert.error_message ||
+              defaultExpert.error_code ||
+              "unknown",
+          }),
+        );
+      } else if (defaultExpert?.status === "created") {
+        message.success(
+          t("adminUsers.createSuccessWithExpert", {
+            username: values.username,
+          }),
+        );
+      } else {
+        message.success(
+          t("adminUsers.createSuccess", { username: values.username }),
+        );
+      }
       form.resetFields();
       setCreateOpen(false);
       void refreshUsers();
@@ -2213,7 +2288,7 @@ export default function UsersListPanel() {
       limit_allowed_backend_types: false,
       allowed_backend_types: undefined,
       create_default_expert: true,
-      expert_template_id: DEFAULT_EXPERT_TEMPLATE_ID,
+      expert_template_id: undefined,
       ...(userRole ? policyFieldsFromRole(userRole, workspaceRootAllowed) : {}),
     });
     setPendingUserAvatar(null);
@@ -2858,7 +2933,7 @@ export default function UsersListPanel() {
             limit_max_agents: false,
             limit_allowed_backend_types: false,
             create_default_expert: true,
-            expert_template_id: DEFAULT_EXPERT_TEMPLATE_ID,
+            expert_template_id: undefined,
           }}
           className={styles.createUserForm}
         >
@@ -3021,6 +3096,8 @@ export default function UsersListPanel() {
                     label={t("adminUsers.expertTemplate")}
                     name="expert_template_id"
                     rules={
+                      !expertTemplatesLoading &&
+                      !expertTemplatesError &&
                       expertTemplates.length > 0
                         ? [
                             {
@@ -3031,7 +3108,19 @@ export default function UsersListPanel() {
                         : []
                     }
                   >
-                    <ExpertTemplatePicker options={expertTemplates} />
+                    <ExpertTemplatePicker
+                      options={expertTemplates}
+                      loading={expertTemplatesLoading}
+                      error={expertTemplatesError}
+                      empty={
+                        !expertTemplatesLoading &&
+                        !expertTemplatesError &&
+                        expertTemplates.length === 0
+                      }
+                      onRetry={() =>
+                        setExpertTemplatesReload((n) => n + 1)
+                      }
+                    />
                   </Form.Item>
                 ) : null
               }

@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+import os
+
+import pytest
+
+posix_only = pytest.mark.skipif(
+    os.name != "posix", reason="local_shell backend workspace file ops unsupported on Windows"
+)
+
 
 async def test_create_list_get_delete(env):
     c, srv, auth = env
@@ -583,3 +591,216 @@ async def test_sharing_audience_counts_enabled_users_and_groups(env):
     assert group.status_code == 201, group.text
     body = (await c.get("/api/user-groups/audience", headers=auth)).json()
     assert body == {"user_count": 1, "group_count": 1}
+
+
+async def _publish_template(client, auth, *, name: str = "Default published") -> str:
+    """Create a source agent and publish it; return PublishedExpert.id."""
+    created = await client.post(
+        "/api/agents/from-expert/default",
+        headers=auth,
+        json={"name": f"source-{name}"},
+    )
+    assert created.status_code == 201, created.text
+    agent_id = created.json()["agent_id"]
+    published = await client.post(
+        f"/api/agents/{agent_id}/publish-expert",
+        headers=auth,
+        json={"name": name, "description": "template for new users"},
+    )
+    assert published.status_code == 201, published.text
+    return published.json()["id"]
+
+
+async def test_create_user_with_published_default_expert(env):
+    """AT-03/04/06: create user installs published expert; bootstrap may be pending."""
+    c, server, auth = env
+    expert_id = await _publish_template(c, auth, name="Ops published")
+
+    created = await c.post(
+        "/api/users",
+        headers=auth,
+        json={
+            "username": "new_with_pub",
+            "password": "TestPass12",
+            "role": "user",
+            "create_default_expert": True,
+            "expert_template_source": "published",
+            "expert_template_id": expert_id,
+        },
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    default_expert = body["default_expert"]
+    assert default_expert["requested"] is True
+    assert default_expert["source"] == "published"
+    assert default_expert["template_id"] == expert_id
+    assert default_expert["status"] == "created"
+    assert default_expert["agent_id"]
+    assert default_expert["bootstrap_status"] in ("pending", "ready")
+    assert default_expert["error_code"] is None
+
+    agent_id = default_expert["agent_id"]
+    row = server.services.agent_repo.get(agent_id)
+    assert row is not None
+    assert int(row.user_id) == int(body["id"])
+    assert row.published_expert_id == expert_id
+
+
+async def test_create_user_published_expert_missing_does_not_create_user(env):
+    """AT-07: missing published id returns 404 and does not create the user."""
+    c, _server, auth = env
+    before = {u["username"] for u in (await c.get("/api/users", headers=auth)).json()}
+    missing = await c.post(
+        "/api/users",
+        headers=auth,
+        json={
+            "username": "ghost_user",
+            "password": "TestPass12",
+            "role": "user",
+            "create_default_expert": True,
+            "expert_template_source": "published",
+            "expert_template_id": "01J_DOES_NOT_EXIST",
+        },
+    )
+    assert missing.status_code == 404, missing.text
+    after = {u["username"] for u in (await c.get("/api/users", headers=auth)).json()}
+    assert "ghost_user" not in after
+    assert after == before
+
+
+async def test_create_user_without_default_expert_reports_not_requested(env):
+    c, _server, auth = env
+    created = await c.post(
+        "/api/users",
+        headers=auth,
+        json={
+            "username": "no_expert",
+            "password": "TestPass12",
+            "role": "user",
+            "create_default_expert": False,
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["default_expert"]["status"] == "not_requested"
+    assert created.json()["default_expert"]["requested"] is False
+
+
+async def test_create_user_legacy_catalog_source_still_creates_user(env):
+    """AT-17: omitting expert_template_source keeps catalog path; user is created."""
+    c, _server, auth = env
+    created = await c.post(
+        "/api/users",
+        headers=auth,
+        json={
+            "username": "legacy_catalog",
+            "password": "TestPass12",
+            "role": "user",
+            "create_default_expert": True,
+            "expert_template_id": "general-assistant",
+        },
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["username"] == "legacy_catalog"
+    assert body["default_expert"]["source"] == "catalog"
+    assert body["default_expert"]["requested"] is True
+    assert body["default_expert"]["status"] in ("created", "failed")
+
+
+async def test_create_user_published_respects_max_agents_zero(env):
+    """AT-12: max_agents=0 keeps the user and reports AGENT_QUOTA_EXCEEDED."""
+    c, _server, auth = env
+    expert_id = await _publish_template(c, auth, name="Quota published")
+    created = await c.post(
+        "/api/users",
+        headers=auth,
+        json={
+            "username": "quota_zero",
+            "password": "TestPass12",
+            "role": "user",
+            "max_agents": 0,
+            "create_default_expert": True,
+            "expert_template_source": "published",
+            "expert_template_id": expert_id,
+        },
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["username"] == "quota_zero"
+    assert body["max_agents"] == 0
+    default_expert = body["default_expert"]
+    assert default_expert["status"] == "failed"
+    assert default_expert["error_code"] == "AGENT_QUOTA_EXCEEDED"
+    assert default_expert["agent_id"] is None
+
+
+async def test_install_published_default_expert_is_idempotent(env):
+    """AT-14: second install for same user+template returns the same agent."""
+    from octop.infra.agents.experts.default_agent import install_published_default_expert
+    from octop.infra.users.identity import User
+
+    c, server, auth = env
+    expert_id = await _publish_template(c, auth, name="Idempotent published")
+    created = await c.post(
+        "/api/users",
+        headers=auth,
+        json={
+            "username": "idempotent_user",
+            "password": "TestPass12",
+            "role": "user",
+            "create_default_expert": True,
+            "expert_template_source": "published",
+            "expert_template_id": expert_id,
+        },
+    )
+    assert created.status_code == 201, created.text
+    first_agent = created.json()["default_expert"]["agent_id"]
+    assert first_agent
+
+    row = server.user_manager.get_row(created.json()["id"])
+    assert row is not None
+    user = User(
+        id=row.id,
+        username=row.username,
+        role=row.role,
+        display_name=row.display_name,
+        permissions=list(row.permissions or []),
+    )
+    again = await install_published_default_expert(
+        server,
+        user=user,
+        published_expert_id=expert_id,
+    )
+    assert again["agent_id"] == first_agent
+    agents = server.app_runtime.agent_registry.list_agents(int(row.id))
+    matching = [a for a in agents if a.published_expert_id == expert_id]
+    assert len(matching) == 1
+
+
+@posix_only
+async def test_create_user_published_seeds_workspace_snapshot(env):
+    """AT-05: installed default expert workspace contains published snapshot files."""
+    c, server, auth = env
+    expert_id = await _publish_template(c, auth, name="Snapshot published")
+    created = await c.post(
+        "/api/users",
+        headers=auth,
+        json={
+            "username": "snap_user",
+            "password": "TestPass12",
+            "role": "user",
+            "create_default_expert": True,
+            "expert_template_source": "published",
+            "expert_template_id": expert_id,
+        },
+    )
+    assert created.status_code == 201, created.text
+    agent_id = created.json()["default_expert"]["agent_id"]
+    assert agent_id
+    workspace = server.app_runtime.agent_registry.workspace_for_agent(agent_id)
+    assert workspace is not None
+    listed = await workspace.list_files(".")
+    names = {getattr(item, "name", None) or getattr(item, "path", None) for item in listed}
+    assert any(name and "manifest" in str(name).lower() for name in names) or any(
+        str(name).endswith(".md") for name in names if name
+    )

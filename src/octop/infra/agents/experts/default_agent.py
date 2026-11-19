@@ -4,16 +4,21 @@ Used by the setup wizard (pinned ``agent_id=main``), invite redeem, and
 admin user creation. The template defaults to ``general-assistant`` and is
 loaded from the expert market when it is not already in the local catalog.
 A market miss does not fail the caller.
+
+Admin user creation may also install from a local published-expert snapshot
+via :func:`install_published_default_expert`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from octop.infra.agents.experts.catalog import ExpertCatalog, build_create_spec_from_expert
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.users.identity import User
 from octop.infra.users.resource_policy import (
     POLICY_WORKSPACE_ROOT_DIR,
     effective_workspace_root_dir,
@@ -180,10 +185,14 @@ async def try_bootstrap_default_agent(
     locale: str = "zh",
     agent_id: str | None = None,
     expert_id: str | None = None,
-) -> None:
-    """Best-effort wrapper used by HTTP adapters (setup / invite / new user)."""
+) -> Any | None:
+    """Best-effort wrapper used by HTTP adapters (setup / invite / new user).
+
+    Returns the created agent row when bootstrap succeeds, otherwise ``None``.
+    Exceptions are logged and swallowed so user creation still succeeds.
+    """
     try:
-        await bootstrap_first_expert(
+        return await bootstrap_first_expert(
             server,
             user_id=user_id,
             locale=locale,
@@ -192,3 +201,130 @@ async def try_bootstrap_default_agent(
         )
     except Exception as exc:  # pragma: no cover - logged; user creation should still succeed
         logger.warning("could not auto-create default agent for user %s: %s", user_id, exc)
+        return None
+
+
+def _existing_published_install(
+    registry: Any, user_id: int, published_expert_id: str
+) -> Any | None:
+    """Return an existing agent for *user_id* installed from *published_expert_id*."""
+    for row in registry.list_agents(user_id):
+        if str(getattr(row, "published_expert_id", None) or "") == published_expert_id:
+            return row
+    return None
+
+
+async def install_published_default_expert(
+    server: Any,
+    *,
+    user: User,
+    published_expert_id: str,
+    locale: str = "zh",
+) -> dict[str, Any]:
+    """Install a local published-expert snapshot as the new user's default agent.
+
+    Reuses :func:`install_published_expert`. Does not copy publisher credentials,
+    MCP connections, or knowledge-base grants. Raises :class:`OctopError` on
+    hard failures (runtime unavailable, quota, snapshot missing, …).
+    """
+    del locale  # locale reserved for future localized install copy; install uses row fields
+    expert_id = (published_expert_id or "").strip()
+    if not expert_id:
+        raise OctopError(ErrorCode.SLASH_BAD_ARGS, "expert_template_id is required", status=400)
+
+    started = time.monotonic()
+    logger.info(
+        "user.default_expert.install.started user_id=%s published_expert_id=%s stage=precheck",
+        user.id,
+        expert_id,
+    )
+
+    runtime = getattr(server, "app_runtime", None)
+    registry = getattr(runtime, "agent_registry", None) if runtime is not None else None
+    if runtime is None or registry is None:
+        raise OctopError(
+            ErrorCode.DEFAULT_EXPERT_FAILED,
+            "agent runtime is not ready",
+        )
+
+    from octop.infra.agents.experts.published_creation import (  # noqa: PLC0415
+        PublishedExpertInstallOptions,
+        install_published_expert,
+        require_published_expert,
+    )
+
+    row = require_published_expert(server.services, expert_id)
+
+    existing = _existing_published_install(registry, int(user.id), row.id)
+    if existing is not None:
+        agent_id = str(existing.agent_id)
+        pending = not registry.is_bootstrapped(agent_id)
+        duration_ms = int((time.monotonic() - started) * 1000)
+        logger.info(
+            "user.default_expert.install.succeeded user_id=%s published_expert_id=%s "
+            "agent_id=%s stage=precheck status=idempotent duration_ms=%s",
+            user.id,
+            row.id,
+            agent_id,
+            duration_ms,
+        )
+        return {
+            "agent_id": agent_id,
+            "published_expert_id": row.id,
+            "bootstrap_pending": pending,
+            "state": getattr(existing, "last_state", None) or "unknown",
+        }
+
+    options = PublishedExpertInstallOptions(
+        name=row.name,
+        description=row.description or "",
+        color=row.color or None,
+        backend=default_home_local_backend(
+            root_dir=user_policy_workspace_root(server, int(user.id))
+        ),
+        # Intentionally omit providers / MCP / knowledge bases (FR-05).
+    )
+    try:
+        created = await install_published_expert(
+            services=server.services,
+            registry=registry,
+            user=user,
+            expert_id=row.id,
+            options=options,
+        )
+    except OctopError:
+        duration_ms = int((time.monotonic() - started) * 1000)
+        logger.warning(
+            "user.default_expert.install.failed user_id=%s published_expert_id=%s "
+            "stage=agent_create duration_ms=%s",
+            user.id,
+            row.id,
+            duration_ms,
+        )
+        raise
+    except Exception as exc:
+        duration_ms = int((time.monotonic() - started) * 1000)
+        logger.exception(
+            "user.default_expert.install.failed user_id=%s published_expert_id=%s "
+            "stage=agent_create duration_ms=%s",
+            user.id,
+            row.id,
+            duration_ms,
+        )
+        raise OctopError(
+            ErrorCode.DEFAULT_EXPERT_FAILED,
+            "could not install default expert from published snapshot",
+        ) from exc
+
+    agent_id = str(created.get("agent_id") or "")
+    duration_ms = int((time.monotonic() - started) * 1000)
+    logger.info(
+        "user.default_expert.install.succeeded user_id=%s published_expert_id=%s "
+        "agent_id=%s stage=agent_create status=%s duration_ms=%s",
+        user.id,
+        row.id,
+        agent_id,
+        "pending" if created.get("bootstrap_pending") else "ready",
+        duration_ms,
+    )
+    return created

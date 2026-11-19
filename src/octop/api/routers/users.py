@@ -62,10 +62,21 @@ class UserCreateBody(BaseModel):
         default=False,
         description="When true, create one expert from expert_template_id in this request.",
     )
+    expert_template_source: Literal["catalog", "published"] = Field(
+        default="catalog",
+        description=(
+            "Template source for create_default_expert. "
+            "'catalog' uses ExpertCatalog / market ids (legacy). "
+            "'published' uses a local PublishedExpert.id snapshot install."
+        ),
+    )
     expert_template_id: str | None = Field(
         default=None,
         max_length=128,
-        description="Expert catalog id. Defaults to general-assistant when omitted.",
+        description=(
+            "Template id. When expert_template_source=catalog: ExpertCatalog / market id "
+            "(defaults to general-assistant). When source=published: PublishedExpert.id."
+        ),
     )
 
 
@@ -345,16 +356,146 @@ async def list_users(
 
 
 def _expert_template_id(body: UserCreateBody) -> str | None:
-    """Market template id to bootstrap, or ``None`` when the caller opted out.
+    """Template id to bootstrap, or ``None`` when the caller opted out.
 
-    The id is not checked against the local catalog. Creation pulls it from
-    the expert market and still succeeds when that pull fails.
+    For ``catalog`` source the id is not checked against the local catalog;
+    creation pulls it from the expert market and still succeeds when that
+    pull fails. For ``published`` source the id is a PublishedExpert.id and
+    must be non-empty when create_default_expert is true.
     """
     if not body.create_default_expert:
         return None
+    cleaned = (body.expert_template_id or "").strip()
+    if body.expert_template_source == "published":
+        return cleaned or None
     from octop.infra.agents.experts.default_agent import DEFAULT_EXPERT_ID
 
-    return (body.expert_template_id or "").strip() or DEFAULT_EXPERT_ID
+    return cleaned or DEFAULT_EXPERT_ID
+
+
+def _default_expert_not_requested() -> dict[str, Any]:
+    return {
+        "requested": False,
+        "source": None,
+        "template_id": None,
+        "status": "not_requested",
+        "agent_id": None,
+        "bootstrap_status": "not_started",
+        "error_code": None,
+        "error_message": None,
+    }
+
+
+def _default_expert_result(
+    *,
+    source: str,
+    template_id: str | None,
+    status: str,
+    agent_id: str | None = None,
+    bootstrap_status: str = "not_started",
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "requested": True,
+        "source": source,
+        "template_id": template_id,
+        "status": status,
+        "agent_id": agent_id,
+        "bootstrap_status": bootstrap_status,
+        "error_code": error_code,
+        "error_message": error_message,
+    }
+
+
+async def _install_default_expert_for_create(
+    *,
+    server: Any,
+    user: Any,
+    body: UserCreateBody,
+    template_id: str | None,
+    locale: str,
+) -> dict[str, Any]:
+    """Create the default expert after the user row exists; never raise for install failures."""
+    if not body.create_default_expert:
+        return _default_expert_not_requested()
+
+    source = body.expert_template_source
+    if source == "published":
+        assert template_id is not None
+        from octop.infra.agents.experts.default_agent import (  # noqa: PLC0415
+            install_published_default_expert,
+        )
+
+        try:
+            created = await install_published_default_expert(
+                server,
+                user=user,
+                published_expert_id=template_id,
+                locale=locale,
+            )
+        except OctopError as exc:
+            logger.warning(
+                "default published expert install failed for user %s: %s",
+                user.id,
+                exc.message,
+            )
+            return _default_expert_result(
+                source=source,
+                template_id=template_id,
+                status="failed",
+                error_code=exc.code.value,
+                error_message=exc.message,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.exception("default published expert install failed for user %s", user.id)
+            return _default_expert_result(
+                source=source,
+                template_id=template_id,
+                status="failed",
+                error_code=ErrorCode.DEFAULT_EXPERT_FAILED.value,
+                error_message=str(exc) or "could not install default expert",
+            )
+        agent_id = str(created.get("agent_id") or "") or None
+        pending = bool(created.get("bootstrap_pending"))
+        return _default_expert_result(
+            source=source,
+            template_id=template_id,
+            status="created",
+            agent_id=agent_id,
+            bootstrap_status="pending" if pending else "ready",
+        )
+
+    from octop.infra.agents.experts.default_agent import (  # noqa: PLC0415
+        try_bootstrap_default_agent,
+    )
+
+    row = await try_bootstrap_default_agent(
+        server,
+        user_id=user.id,
+        locale=locale,
+        expert_id=template_id,
+    )
+    if row is None:
+        return _default_expert_result(
+            source=source,
+            template_id=template_id,
+            status="failed",
+            error_code=ErrorCode.DEFAULT_EXPERT_FAILED.value,
+            error_message="could not create default expert",
+        )
+    agent_id = str(getattr(row, "agent_id", None) or "") or None
+    registry = getattr(getattr(server, "app_runtime", None), "agent_registry", None)
+    pending = True
+    if registry is not None and agent_id is not None:
+        pending = not registry.is_bootstrapped(agent_id)
+    return _default_expert_result(
+        source=source,
+        template_id=template_id,
+        status="created",
+        agent_id=agent_id,
+        bootstrap_status="pending" if pending else "ready",
+    )
 
 
 @router.post("", status_code=201)
@@ -365,6 +506,20 @@ async def create_user(
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     template_id = _expert_template_id(body)
+    if body.create_default_expert and body.expert_template_source == "published":
+        if not template_id:
+            raise OctopError(
+                ErrorCode.SLASH_BAD_ARGS,
+                "expert_template_id is required when expert_template_source=published",
+                status=400,
+            )
+        from octop.infra.agents.experts.published_creation import (  # noqa: PLC0415
+            require_published_expert,
+        )
+
+        # Fail before creating the user when the published template is missing.
+        require_published_expert(server.services, template_id)
+
     role_id, template_name, template_perms, template_policies = _resolve_role_template(
         server, body.role
     )
@@ -409,25 +564,23 @@ async def create_user(
         directory_provider_id=directory_provider_id,
     )
     await server.user_manager.set_resource_policy(user.username, **policy_kwargs)
-    if template_id is not None:
-        from octop.infra.agents.experts.default_agent import (  # noqa: PLC0415
-            try_bootstrap_default_agent,
-        )
-
-        await try_bootstrap_default_agent(
-            server,
-            user_id=user.id,
-            locale=resolve_request_locale(request),
-            expert_id=template_id,
-        )
+    default_expert = await _install_default_expert_for_create(
+        server=server,
+        user=user,
+        body=body,
+        template_id=template_id,
+        locale=resolve_request_locale(request),
+    )
     row = server.user_manager.get_row(user.id)
     assert row is not None
-    return _row_to_dict(
+    payload = _row_to_dict(
         row,
         server.services.user_policy_repo.list_for_user(row.id),
         server,
         directory_provider_id=_directory_provider_id(server),
     )
+    payload["default_expert"] = default_expert
+    return payload
 
 
 def _batch_fail(user_id: int, *, code: str, error: str) -> UserBatchItemResult:
