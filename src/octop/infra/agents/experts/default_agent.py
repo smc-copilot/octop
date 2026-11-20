@@ -61,12 +61,32 @@ def user_policy_workspace_root(server: Any, user_id: int) -> str | None:
     )
 
 
-def resolve_default_expert_backend(server: Any, user_id: int) -> dict[str, Any]:
-    """Pick a local backend allowed by the user's ``allowed_backend_types`` policy.
+def _first_named_storage_backend(server: Any, *, kind: str) -> dict[str, Any] | None:
+    """Return a ``named`` backend ref for the first enabled storage of *kind*."""
+    repo = getattr(server.services, "storage_backend_repo", None)
+    if repo is None:
+        return None
+    list_all = getattr(repo, "list_all", None)
+    if list_all is None:
+        return None
+    for row in list_all():
+        if int(getattr(row, "enabled", 0) or 0) != 1:
+            continue
+        if str(getattr(row, "kind", "") or "").strip().lower() != kind:
+            continue
+        name = str(getattr(row, "name", "") or "").strip()
+        if name:
+            return {"type": "named", "name": name}
+    return None
 
-    Prefers ``local_shell``, then ``filesystem``. Unrestricted policies keep
-    ``local_shell``. Raises :class:`OctopError` when neither local type is
-    permitted (AT-11: do not bypass the allow-list).
+
+def resolve_default_expert_backend(server: Any, user_id: int) -> dict[str, Any]:
+    """Pick a backend allowed by the user's ``allowed_backend_types`` policy.
+
+    Preference order: ``local_shell`` → ``filesystem`` → first enabled named
+    ``docker`` / ``opensandbox`` storage. Unrestricted policies keep
+    ``local_shell``. Raises :class:`OctopError` when nothing usable is allowed
+    (AT-11: do not bypass the allow-list).
     """
     from octop.infra.users.resource_policy import (  # noqa: PLC0415
         POLICY_ALLOWED_BACKEND_TYPES,
@@ -81,6 +101,12 @@ def resolve_default_expert_backend(server: Any, user_id: int) -> dict[str, Any]:
         return default_home_local_backend(root_dir=root_dir, backend_type="local_shell")
     if "filesystem" in allowed:
         return default_home_local_backend(root_dir=root_dir, backend_type="filesystem")
+    for kind in ("docker", "opensandbox"):
+        if kind not in allowed:
+            continue
+        named = _first_named_storage_backend(server, kind=kind)
+        if named is not None:
+            return named
     types = ", ".join(allowed)
     raise OctopError(
         ErrorCode.BACKEND_TYPE_NOT_ALLOWED,
