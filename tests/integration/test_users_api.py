@@ -760,18 +760,18 @@ async def test_create_user_published_falls_back_to_filesystem_backend(env):
     assert (detail.get("backend") or {}).get("type") == "filesystem"
 
 
-async def test_create_user_published_rejects_without_local_backend(env):
-    """AT-11: allow-list without local_shell/filesystem keeps user and reports failure."""
+async def test_create_user_published_rejects_without_usable_backend(env):
+    """AT-11: allow-list without local/sandbox backends keeps user and reports failure."""
     c, _server, auth = env
-    expert_id = await _publish_template(c, auth, name="No local backend")
+    expert_id = await _publish_template(c, auth, name="No usable backend")
     created = await c.post(
         "/api/users",
         headers=auth,
         json={
-            "username": "docker_only_user",
+            "username": "cos_only_user",
             "password": "TestPass12",
             "role": "user",
-            "allowed_backend_types": ["docker"],
+            "allowed_backend_types": ["cos"],
             "create_default_expert": True,
             "expert_template_source": "published",
             "expert_template_id": expert_id,
@@ -782,6 +782,31 @@ async def test_create_user_published_rejects_without_local_backend(env):
     assert default_expert["status"] == "failed"
     assert default_expert["error_code"] == "BACKEND_TYPE_NOT_ALLOWED"
     assert default_expert["agent_id"] is None
+
+
+async def test_resolve_default_expert_backend_uses_named_docker(env):
+    """Docker-only allow-list resolves to the first enabled named docker storage."""
+    from octop.infra.agents.experts.default_agent import resolve_default_expert_backend
+    from tests.support.auth import TEST_PASSWORD, create_user
+
+    c, server, auth = env
+    server.services.storage_backend_repo.create(
+        name="default-docker-sandbox",
+        kind="docker",
+        bucket="octop/sandbox:latest",
+    )
+    user_auth = await create_user(c, auth, username="docker_policy_user", password=TEST_PASSWORD)
+    listed = (await c.get("/api/users", headers=auth)).json()
+    uid = next(u["id"] for u in listed if u["username"] == "docker_policy_user")
+    patched = await c.patch(
+        f"/api/users/{uid}",
+        headers=auth,
+        json={"allowed_backend_types": ["docker"]},
+    )
+    assert patched.status_code == 200, patched.text
+    del user_auth
+    backend = resolve_default_expert_backend(server, uid)
+    assert backend == {"type": "named", "name": "default-docker-sandbox"}
 
 
 async def test_install_published_default_expert_is_idempotent(env):

@@ -2190,11 +2190,13 @@ export default function UsersListPanel() {
       const backendTypes = values.limit_allowed_backend_types
         ? values.allowed_backend_types ?? []
         : null;
-      if (
-        backendTypes &&
-        !backendTypes.includes("local_shell") &&
-        !backendTypes.includes("filesystem")
-      ) {
+      const hasUsableBackend =
+        !backendTypes ||
+        backendTypes.includes("local_shell") ||
+        backendTypes.includes("filesystem") ||
+        backendTypes.includes("docker") ||
+        backendTypes.includes("opensandbox");
+      if (!hasUsableBackend) {
         message.error(t("adminUsers.defaultExpertNeedsLocalBackend"));
         return;
       }
