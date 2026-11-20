@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends
@@ -36,6 +37,11 @@ def _redact_env_items(items: list[dict[str, str]]) -> list[dict[str, str]]:
     ]
 
 
+def _public_env_items(path: Path) -> list[dict[str, str]]:
+    """Env rows visible to Admin UI — shell-owned keys stay file-only."""
+    return [item for item in list_env_items(path) if not shell_owned_env_key(str(item["key"]))]
+
+
 def _restore_secret_sentinel(cleaned: dict[str, str], previous: dict[str, str]) -> None:
     for key in _CAPTCHA_SECRET_KEYS:
         if cleaned.get(key) != _SECRET_SENTINEL:
@@ -44,6 +50,18 @@ def _restore_secret_sentinel(cleaned: dict[str, str], previous: dict[str, str]) 
             cleaned[key] = previous[key]
         else:
             cleaned.pop(key, None)
+
+
+def _preserve_shell_owned(cleaned: dict[str, str], previous: dict[str, str]) -> None:
+    """Keep shell-owned keys already on disk across full-replace writes.
+
+    Admin search/settings UIs round-trip ``GET /envs`` → ``PUT /envs``. Those
+    keys (``OCTOP_HOME``, ``OCTOP_PORT``, …) must remain in ``~/.octop/env``
+    even when the client omits or re-sends them.
+    """
+    for key, value in previous.items():
+        if shell_owned_env_key(key):
+            cleaned[key] = value
 
 
 def _after_env_sync(server: Any, previous: dict[str, str], new: dict[str, str]) -> None:
@@ -76,18 +94,20 @@ async def list_envs(
     server: Any = Depends(get_server),
 ) -> list[dict[str, str]]:
     path = env_file_path(server.paths.root)
-    return _redact_env_items(list_env_items(path))
+    return _redact_env_items(_public_env_items(path))
 
 
 @router.put(
     "",
     summary="Replace global environment variables",
     description=(
-        "Overwrite ~/.octop/env and align the Octop process environment "
-        "(including deleting keys removed from the list). Running execute "
-        "shells and Docker sandboxes pick up keys on the next command without "
-        "an agent reload. Agents reload in the background only when search "
-        "API keys (Tavily, Brave, …) change."
+        "Overwrite editable keys in ~/.octop/env and align the Octop process "
+        "environment (including deleting keys removed from the list). "
+        "Shell-owned keys (OCTOP_HOME, OCTOP_PORT, OCTOP_BIND_HOST, …) are "
+        "ignored in the body and preserved on disk. Running execute shells "
+        "and Docker sandboxes pick up keys on the next command without an "
+        "agent reload. Agents reload in the background only when search API "
+        "keys (Tavily, Brave, …) change."
     ),
 )
 async def batch_save_envs(
@@ -103,17 +123,17 @@ async def batch_save_envs(
         if not _KEY_RE.match(k):
             raise OctopError(ErrorCode.SLASH_BAD_ARGS, f"invalid env key: {k!r}")
         if shell_owned_env_key(k):
-            raise OctopError(
-                ErrorCode.SLASH_BAD_ARGS, f"env key is shell-owned and read-only: {k!r}"
-            )
+            # Round-tripped by older UIs that listed every file key; keep disk value.
+            continue
         cleaned[k] = str(value)
     path = env_file_path(server.paths.root)
     previous = load_env_file(path)
     _restore_secret_sentinel(cleaned, previous)
+    _preserve_shell_owned(cleaned, previous)
     save_env_file(path, cleaned)
     apply_env_file_replace(path, previous=previous)
     _after_env_sync(server, previous, cleaned)
-    return _redact_env_items(list_env_items(path))
+    return _redact_env_items(_public_env_items(path))
 
 
 @router.delete(
@@ -138,4 +158,4 @@ async def delete_env(
     save_env_file(path, values)
     apply_env_file_replace(path, previous=previous)
     _after_env_sync(server, previous, values)
-    return _redact_env_items(list_env_items(path))
+    return _redact_env_items(_public_env_items(path))

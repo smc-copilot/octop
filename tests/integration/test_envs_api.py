@@ -88,3 +88,50 @@ async def test_envs_non_admin_forbidden(env: Any) -> None:
     ).json()["access_token"]
     r = await c.get("/api/envs", headers={"Authorization": f"Bearer {bob_tok}"})
     assert r.status_code == 403
+
+
+async def test_envs_put_preserves_shell_owned_keys(env: Any) -> None:
+    """Deploy env files often pin OCTOP_HOME/PORT; Admin PUT must not 400 or wipe them."""
+    c, srv, auth = env
+    env_path = srv.paths.root / "env"
+    env_path.write_text(
+        "OCTOP_HOME=/home/smc/.octop\n"
+        "OCTOP_BIND_HOST=0.0.0.0\n"
+        "OCTOP_PORT=8088\n"
+        "OCTOP_LOG_LEVEL=info\n",
+        encoding="utf-8",
+    )
+
+    listed = await c.get("/api/envs", headers=auth)
+    assert listed.status_code == 200, listed.text
+    listed_keys = {row["key"] for row in listed.json()}
+    assert "OCTOP_LOG_LEVEL" in listed_keys
+    assert "OCTOP_HOME" not in listed_keys
+    assert "OCTOP_PORT" not in listed_keys
+    assert "OCTOP_BIND_HOST" not in listed_keys
+
+    # Legacy UI may still round-trip shell-owned keys from an older GET.
+    saved = await c.put(
+        "/api/envs",
+        headers=auth,
+        json={
+            "OCTOP_HOME": "/tmp/wrong",
+            "OCTOP_BIND_HOST": "127.0.0.1",
+            "OCTOP_PORT": "9",
+            "OCTOP_LOG_LEVEL": "debug",
+            "DEEPSEEK_API_KEY": "sk-test",
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    saved_keys = {row["key"]: row["value"] for row in saved.json()}
+    assert saved_keys["DEEPSEEK_API_KEY"] == "sk-test"
+    assert saved_keys["OCTOP_LOG_LEVEL"] == "debug"
+    assert "OCTOP_HOME" not in saved_keys
+
+    text = env_path.read_text(encoding="utf-8")
+    assert "OCTOP_HOME=/home/smc/.octop" in text
+    assert "OCTOP_BIND_HOST=0.0.0.0" in text
+    assert "OCTOP_PORT=8088" in text
+    assert "OCTOP_LOG_LEVEL=debug" in text
+    assert "DEEPSEEK_API_KEY=sk-test" in text
+    assert "/tmp/wrong" not in text
