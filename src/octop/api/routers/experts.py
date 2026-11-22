@@ -760,24 +760,38 @@ async def unpublish_expert(
 async def install_published_expert(
     expert_id: str,
     body: InstallPublishedExpertBody,
+    as_user: int | None = None,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
-    """Create a private agent and seed it from the immutable published snapshot."""
+    """Create a private agent and seed it from the immutable published snapshot.
+
+    Optional ``as_user`` lets an admin install the expert for another Octop user;
+    ownership and resource checks then use that target user, not the actor.
+    """
+    # @lat: [[decisions#Published expert as_user install]]
     assert server.app_runtime is not None
     assert server.services is not None
+    target_user = user
+    if as_user is not None and as_user != user.id:
+        if not user.is_admin:
+            raise OctopError(ErrorCode.FORBIDDEN, "as_user requires admin")
+        resolved = server.user_manager.get_by_id(as_user)
+        if resolved is None:
+            raise OctopError(ErrorCode.NOT_FOUND, f"user {as_user} not found")
+        target_user = resolved
     assert_user_backend_root_dirs(
-        user,
+        target_user,
         body.backend,
         policy_repo=server.services.user_policy_repo,
     )
     kb_ids, servers = _validated_session_defaults(
         server.app_runtime.agent_registry,
-        user.id,
+        target_user.id,
         knowledge_base_ids=body.knowledge_base_ids,
         mcp_servers=body.mcp_servers,
     )
-    patch, copies, report = _composer_apply(body, user=user, server=server)
+    patch, copies, report = _composer_apply(body, user=target_user, server=server)
     if body.visibility is not None:
         from octop.infra.users.groups import GroupAccess  # noqa: PLC0415
 
@@ -785,7 +799,7 @@ async def install_published_expert(
     result = await install_published_expert_agent(
         services=server.services,
         registry=server.app_runtime.agent_registry,
-        user=user,
+        user=target_user,
         expert_id=expert_id,
         options=PublishedExpertInstallOptions(
             name=body.name,

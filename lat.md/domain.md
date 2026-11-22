@@ -60,6 +60,8 @@ SSO and LDAP attach as process-level services on OctopServer. CLI does not imple
 
 Admin `POST /api/users` may request a default expert. `expert_template_source=published` installs a local [[src/octop/infra/agents/experts/published_creation.py#install_published_expert]] snapshot via [[src/octop/infra/agents/experts/default_agent.py#install_published_default_expert]] and returns a `default_expert` status object. Omitting the source keeps the legacy ExpertCatalog / market path through [[src/octop/infra/agents/experts/default_agent.py#try_bootstrap_default_agent]].
 
+Admins may also install a published expert for an existing employee via optional `as_user` on the install API ([[decisions#Published expert as_user install]]).
+
 ## History
 
 Turn projection writes `thread_messages`; optional versioned archive and trajectory capture richer event streams under `infra/history/`.

@@ -45,3 +45,9 @@ Exceptions stay documented in `AGENTS.md` §7 (users, name-keyed config, append-
 Slash UX is shared across IM, dashboard, and CLI. [[src/octop/infra/gateway/slash/dispatcher.py#SlashDispatcher]] routes; handlers live under `handlers/`; [[src/octop/infra/gateway/slash/dispatcher.py#build_default_dispatcher]] builds the catalog-backed default.
 
 Some commands stay in gateway handlers; others delegate to harness runtime slash. Catalog drives help and UI labels with i18n keys.
+
+## Published expert as_user install
+
+`POST /api/experts/published/{id}/install` accepts optional query `as_user` so an admin can install for another user without a new route or owner transfer.
+
+Bearer token user is always the **actor**; resolved `as_user` is the **target**. Non-admins may only target themselves. Target resolution uses [[src/octop/infra/users/manager.py#UserManager#get_by_id]]. Backend, KB/MCP, composer, and [[src/octop/infra/agents/experts/published_creation.py#install_published_expert]] all receive the target so `AgentCreateSpec.user_id` equals that user — never the actor when they differ. See [[src/octop/api/routers/experts.py#install_published_expert]].

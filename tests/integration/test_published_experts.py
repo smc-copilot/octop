@@ -428,3 +428,197 @@ async def test_admin_cannot_publish_another_users_agent(
         json={"name": "Admin must not publish"},
     )
     assert published.status_code == 403, published.text
+
+
+async def _publish_expert(
+    client: Any,
+    owner_auth: dict[str, str],
+    source_agent_id: str,
+    *,
+    name: str,
+) -> str:
+    published = await client.post(
+        f"/api/agents/{source_agent_id}/publish-expert",
+        headers=owner_auth,
+        json={"name": name},
+    )
+    assert published.status_code == 201, published.text
+    return published.json()["id"]
+
+
+async def test_admin_installs_published_expert_as_user(
+    env: tuple[Any, Any, dict[str, str]],
+) -> None:
+    """A-ASU-003/004/011: admin installs for employee; owner and response fields are correct."""
+    from tests.support.auth import resolve_user_id
+
+    client, server, admin_auth = env
+    client, server, owner_auth, peer_auth, source_agent_id = await _owner_and_peer(env)
+    expert_id = await _publish_expert(
+        client, owner_auth, source_agent_id, name="Admin as_user target"
+    )
+    peer_id = await resolve_user_id(client, admin_auth, "publish_peer")
+
+    installed = await client.post(
+        f"/api/experts/published/{expert_id}/install",
+        headers=admin_auth,
+        params={"as_user": peer_id},
+        json={"name": "Employee expert", "description": "installed by admin"},
+    )
+    assert installed.status_code == 201, installed.text
+    body = installed.json()
+    assert body["user_id"] == peer_id
+    assert body["published_expert_id"] == expert_id
+    assert body["state"] == "starting"
+    assert body["bootstrap_pending"] is True
+    assert body["agent_id"]
+
+    row = server.app_runtime.agent_registry.get_row(body["agent_id"])
+    assert row is not None
+    assert row.user_id == peer_id
+
+    visible = await client.get(f"/api/agents/{body['agent_id']}", headers=peer_auth)
+    assert visible.status_code == 200, visible.text
+    assert visible.json()["user_id"] == peer_id
+    assert visible.json()["name"] == "Employee expert"
+
+
+async def test_install_as_user_forbidden_for_non_admin(
+    env: tuple[Any, Any, dict[str, str]],
+) -> None:
+    """A-ASU-005: normal user cannot install for another user."""
+    from tests.support.auth import resolve_user_id
+
+    client, server, admin_auth = env
+    client, server, owner_auth, peer_auth, source_agent_id = await _owner_and_peer(env)
+    expert_id = await _publish_expert(client, owner_auth, source_agent_id, name="Forbidden as_user")
+    owner_id = await resolve_user_id(client, admin_auth, "publish_owner")
+    peer_id = await resolve_user_id(client, admin_auth, "publish_peer")
+    before = {
+        row.agent_id
+        for row in server.app_runtime.agent_registry.list_rows()
+        if row.user_id == peer_id
+    }
+
+    denied = await client.post(
+        f"/api/experts/published/{expert_id}/install",
+        headers=peer_auth,
+        params={"as_user": owner_id},
+        json={"name": "Should not create"},
+    )
+    assert denied.status_code == 403, denied.text
+    assert denied.json()["error"]["code"] == "FORBIDDEN"
+    after = {
+        row.agent_id
+        for row in server.app_runtime.agent_registry.list_rows()
+        if row.user_id == peer_id
+    }
+    assert after == before
+
+
+async def test_install_as_user_missing_target_returns_404(
+    env: tuple[Any, Any, dict[str, str]],
+) -> None:
+    """A-ASU-010: admin targeting a missing user gets 404 and creates no agent."""
+    client, server, admin_auth = env
+    client, server, owner_auth, _peer_auth, source_agent_id = await _owner_and_peer(env)
+    expert_id = await _publish_expert(client, owner_auth, source_agent_id, name="Missing as_user")
+    before = {row.agent_id for row in server.app_runtime.agent_registry.list_rows()}
+
+    missing = await client.post(
+        f"/api/experts/published/{expert_id}/install",
+        headers=admin_auth,
+        params={"as_user": 999_999_999},
+        json={"name": "Missing target"},
+    )
+    assert missing.status_code == 404, missing.text
+    assert missing.json()["error"]["code"] == "NOT_FOUND"
+    after = {row.agent_id for row in server.app_runtime.agent_registry.list_rows()}
+    assert after == before
+
+
+async def test_install_as_user_self_id_allowed(
+    env: tuple[Any, Any, dict[str, str]],
+) -> None:
+    """A-ASU-009: user may pass as_user equal to their own id."""
+    from tests.support.auth import resolve_user_id
+
+    client, _server, admin_auth = env
+    client, server, owner_auth, peer_auth, source_agent_id = await _owner_and_peer(env)
+    expert_id = await _publish_expert(client, owner_auth, source_agent_id, name="Self as_user")
+    peer_id = await resolve_user_id(client, admin_auth, "publish_peer")
+
+    installed = await client.post(
+        f"/api/experts/published/{expert_id}/install",
+        headers=peer_auth,
+        params={"as_user": peer_id},
+        json={"name": "Self installed"},
+    )
+    assert installed.status_code == 201, installed.text
+    assert installed.json()["user_id"] == peer_id
+    row = server.app_runtime.agent_registry.get_row(installed.json()["agent_id"])
+    assert row is not None
+    assert row.user_id == peer_id
+
+
+async def test_install_as_user_respects_target_quota(
+    env: tuple[Any, Any, dict[str, str]],
+) -> None:
+    """A-ASU-008: target user's max_agents quota is enforced, not the admin's."""
+    from tests.support.auth import resolve_user_id
+
+    client, server, admin_auth = env
+    client, server, owner_auth, _peer_auth, source_agent_id = await _owner_and_peer(env)
+    expert_id = await _publish_expert(client, owner_auth, source_agent_id, name="Quota as_user")
+    peer_id = await resolve_user_id(client, admin_auth, "publish_peer")
+    before = {row.agent_id for row in server.app_runtime.agent_registry.list_rows()}
+
+    patched = await client.patch(
+        f"/api/users/{peer_id}",
+        headers=admin_auth,
+        json={"max_agents": 0},
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["max_agents"] == 0
+
+    denied = await client.post(
+        f"/api/experts/published/{expert_id}/install",
+        headers=admin_auth,
+        params={"as_user": peer_id},
+        json={"name": "Over quota"},
+    )
+    assert denied.status_code == 403, denied.text
+    assert denied.json()["error"]["code"] == "AGENT_QUOTA_EXCEEDED"
+    after = {row.agent_id for row in server.app_runtime.agent_registry.list_rows()}
+    assert after == before
+
+
+async def test_install_as_user_validates_kb_for_target(
+    env: tuple[Any, Any, dict[str, str]],
+) -> None:
+    """A-ASU-007: KB visibility is checked for the target user, not the admin actor."""
+    from tests.support.auth import resolve_user_id
+
+    client, server, admin_auth = env
+    client, server, owner_auth, _peer_auth, source_agent_id = await _owner_and_peer(env)
+    expert_id = await _publish_expert(client, owner_auth, source_agent_id, name="KB as_user")
+    peer_id = await resolve_user_id(client, admin_auth, "publish_peer")
+    admin_id = await resolve_user_id(client, admin_auth, "admin")
+    admin_kb = server.services.knowledge_repo.create_base(
+        owner_user_id=admin_id, name="Admin-only KB"
+    )
+    before = {row.agent_id for row in server.app_runtime.agent_registry.list_rows()}
+
+    denied = await client.post(
+        f"/api/experts/published/{expert_id}/install",
+        headers=admin_auth,
+        params={"as_user": peer_id},
+        json={
+            "name": "Should reject admin KB",
+            "knowledge_base_ids": [admin_kb.id],
+        },
+    )
+    assert denied.status_code == 404, denied.text
+    assert denied.json()["error"]["code"] == "KNOWLEDGE_NOT_FOUND"
+    after = {row.agent_id for row in server.app_runtime.agent_registry.list_rows()}
+    assert after == before
