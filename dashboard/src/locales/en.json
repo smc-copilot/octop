@@ -4541,7 +4541,7 @@
     "progress": "Step {{current}} of {{total}}",
     "keyboardHint": "← → to move, Esc to exit",
     "intro": {
-      "title": "Welcome to Octop",
+      "title": "Welcome to SMC AI Copilot",
       "body": "Follow the tour through the pages below. Leave any time, and replay it later from Getting started in your account menu.",
       "duration": "{{count}} steps, about a minute"
     },

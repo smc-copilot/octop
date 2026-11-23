@@ -24,8 +24,6 @@ import {
   ChevronUp,
   Settings,
   Palette,
-  CircleHelp,
-  Github,
   RefreshCw,
   KeyRound,
   ShieldCheck,
@@ -62,8 +60,6 @@ import {
 import AccountSecurityDrawer from "./AccountSecurityDrawer";
 import styles from "./AvatarDropdown.module.less";
 
-const GITHUB_URL = "https://github.com/TencentCloud/Octop";
-const HELP_FEEDBACK_URL = "https://octop.cloud";
 const APP_OAUTH_KINDS = new Set(["feishu", "dingtalk", "wecom"]);
 
 function oauthProviderIcon(kind: string): ReactNode {
@@ -340,17 +336,6 @@ export default function AvatarDropdown({
         <ThemeSwitcher compact />
       </div>
 
-      <a
-        className={styles.menuItem}
-        href={HELP_FEEDBACK_URL}
-        target="_blank"
-        rel="noopener noreferrer"
-        onClick={() => setMenuOpen(false)}
-      >
-        <CircleHelp size={16} strokeWidth={1.8} />
-        <span>{t("account.helpFeedback")}</span>
-      </a>
-
       {onOpenOnboarding ? (
         <button
           type="button"
@@ -361,17 +346,6 @@ export default function AvatarDropdown({
           <span>{t("account.onboarding")}</span>
         </button>
       ) : null}
-
-      <a
-        className={styles.menuItem}
-        href={GITHUB_URL}
-        target="_blank"
-        rel="noopener noreferrer"
-        onClick={() => setMenuOpen(false)}
-      >
-        <Github size={16} strokeWidth={1.8} />
-        <span>{t("account.projectUrl")}</span>
-      </a>
 
       {onCustomizeNav ? (
         <button

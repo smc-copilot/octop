@@ -4541,7 +4541,7 @@
     "progress": "第 {{current}} 步，共 {{total}} 步",
     "keyboardHint": "← → 切换，Esc 退出",
     "intro": {
-      "title": "欢迎使用 Octop",
+      "title": "欢迎使用 SMC AI Copilot",
       "body": "跟着导览打开下面这些页面。随时可以退出，之后从左下角头像菜单的「新手引导」再看一遍。",
       "duration": "共 {{count}} 步，约 1 分钟"
     },
